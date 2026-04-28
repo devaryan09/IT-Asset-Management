@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>IT Asset Management System</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;font-size:14px}
+  :root{
+    --bg:#0f1117;--surface:#1a1d27;--surface2:#232636;--border:#2e3348;
+    --accent:#4f8ef7;--accent2:#7c3aed;--success:#10b981;--warn:#f59e0b;--danger:#ef4444;
+    --text:#e2e8f0;--muted:#8892a4;--card:#1e2130
+  }
+  .app{display:flex;height:100vh;overflow:hidden}
+  .sidebar{width:220px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+  .logo{padding:20px 16px 16px;border-bottom:1px solid var(--border)}
+  .logo-icon{width:32px;height:32px;background:linear-gradient(135deg,#4f8ef7,#7c3aed);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:8px}
+  .logo-company{font-size:10px;font-weight:700;color:#a78bfa;letter-spacing:1.5px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  .logo h1{font-size:13px;font-weight:700;color:#fff;letter-spacing:.5px}
+  .logo p{font-size:11px;color:var(--muted);margin-top:2px}
+  .nav{flex:1;padding:12px 8px;overflow-y:auto}
+  .nav-section{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;padding:8px 8px 4px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;color:var(--muted);font-size:13px;margin-bottom:2px;transition:all .15s}
+  .nav-item:hover{background:var(--surface2);color:var(--text)}
+  .nav-item.active{background:rgba(79,142,247,.15);color:var(--accent)}
+  .nav-item .icon{width:16px;text-align:center;font-size:14px}
+  .role-badge{margin:12px 8px;padding:8px 10px;background:rgba(124,58,237,.1);border:1px solid rgba(124,58,237,.3);border-radius:8px;font-size:11px;color:#a78bfa}
+  .main{flex:1;overflow:hidden;display:flex;flex-direction:column}
+  .topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;gap:16px}
+  .topbar h2{font-size:16px;font-weight:600;color:#fff;flex:1}
+  .topbar-actions{display:flex;gap:8px}
+  .btn{padding:7px 14px;border-radius:8px;border:none;cursor:pointer;font-size:12px;font-weight:500;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{background:#3b7de8}
+  .btn-secondary{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+  .btn-secondary:hover{background:var(--border)}
+  .btn-danger{background:rgba(239,68,68,.15);color:var(--danger);border:1px solid rgba(239,68,68,.3)}
+  .btn-danger:hover{background:rgba(239,68,68,.25)}
+  .btn-sm{padding:4px 10px;font-size:11px}
+  .btn-success{background:rgba(16,185,129,.15);color:var(--success);border:1px solid rgba(16,185,129,.3)}
+  .content{flex:1;overflow-y:auto;padding:24px}
+  .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+  .stat-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 20px}
+  .stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+  .stat-value{font-size:28px;font-weight:700;color:#fff}
+  .stat-sub{font-size:11px;color:var(--muted);margin-top:4px}
+  .stat-card.accent .stat-value{color:var(--accent)}
+  .stat-card.success .stat-value{color:var(--success)}
+  .stat-card.warn .stat-value{color:var(--warn)}
+  .stat-card.danger .stat-value{color:var(--danger)}
+  .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+  .section-title{font-size:14px;font-weight:600;color:#fff}
+  .table-wrap{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  table{width:100%;border-collapse:collapse}
+  th{padding:10px 16px;text-align:left;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;background:var(--surface2);border-bottom:1px solid var(--border)}
+  td{padding:11px 16px;font-size:13px;color:var(--text);border-bottom:1px solid rgba(46,51,72,.5)}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:rgba(255,255,255,.02)}
+  .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:500}
+  .badge-success{background:rgba(16,185,129,.15);color:#34d399}
+  .badge-warn{background:rgba(245,158,11,.15);color:#fbbf24}
+  .badge-danger{background:rgba(239,68,68,.15);color:#f87171}
+  .badge-muted{background:rgba(136,146,164,.15);color:var(--muted)}
+  .badge-blue{background:rgba(79,142,247,.15);color:#7db4fa}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;width:100%;max-width:520px;max-height:90vh;overflow-y:auto}
+  .modal-header{padding:20px 24px 0;display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+  .modal-header h3{font-size:16px;font-weight:600;color:#fff}
+  .modal-close{width:28px;height:28px;border-radius:6px;background:var(--surface2);border:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:16px}
+  .modal-close:hover{color:#fff}
+  .modal-body{padding:0 24px}
+  .modal-footer{padding:20px 24px;display:flex;gap:8px;justify-content:flex-end;border-top:1px solid var(--border);margin-top:20px}
+  .form-group{margin-bottom:16px}
+  .form-label{font-size:12px;font-weight:500;color:var(--muted);margin-bottom:6px;display:block}
+  .form-input,.form-select{width:100%;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;outline:none}
+  .form-input:focus,.form-select:focus{border-color:var(--accent)}
+  .form-select option{background:var(--surface)}
+  .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .search-bar{flex:1;max-width:280px;position:relative}
+  .search-bar input{width:100%;padding:7px 12px 7px 32px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;outline:none}
+  .search-bar input:focus{border-color:var(--accent)}
+  .search-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:12px}
+  .filter-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+  .filter-chip{padding:4px 10px;border-radius:99px;font-size:11px;cursor:pointer;border:1px solid var(--border);background:var(--surface2);color:var(--muted);transition:all .15s}
+  .filter-chip.active{background:rgba(79,142,247,.2);color:var(--accent);border-color:rgba(79,142,247,.4)}
+  .history-list{list-style:none}
+  .history-item{padding:10px 0;border-bottom:1px solid rgba(46,51,72,.5);display:flex;gap:12px;align-items:flex-start}
+  .history-item:last-child{border-bottom:none}
+  .history-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);margin-top:5px;flex-shrink:0}
+  .history-dot.unassign{background:var(--muted)}
+  .history-info{flex:1}
+  .history-info strong{font-size:13px;color:#fff}
+  .history-info small{font-size:11px;color:var(--muted);display:block;margin-top:2px}
+  .empty-state{text-align:center;padding:48px 24px;color:var(--muted)}
+  .empty-icon{font-size:36px;margin-bottom:12px;opacity:.5}
+  .dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+  .type-breakdown{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .type-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .type-bar-bg{flex:1;height:6px;background:var(--surface2);border-radius:99px;overflow:hidden}
+  .type-bar{height:100%;border-radius:99px;background:var(--accent)}
+  .type-label{font-size:12px;color:var(--text);min-width:80px}
+  .type-count{font-size:12px;color:var(--muted);min-width:20px;text-align:right}
+  .detail-section{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px}
+  .detail-section h4{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+  .detail-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(46,51,72,.3);font-size:13px}
+  .detail-row:last-child{border-bottom:none}
+  .detail-key{color:var(--muted)}
+  .detail-val{color:#fff;font-weight:500}
+  .notification{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:10px;font-size:13px;z-index:200;animation:slideIn .25s ease;max-width:300px}
+  .notification.success{border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.1)}
+  .notification.error{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.1)}
+  @keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+  .assign-user-card{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer;transition:all .15s}
+  .assign-user-card:hover,.assign-user-card.selected{border-color:var(--accent);background:rgba(79,142,247,.1)}
+  .avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#4f8ef7,#7c3aed);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0}
+  .avatar-sm{width:24px;height:24px;font-size:10px}
+  .chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:99px;font-size:11px;background:var(--surface2);border:1px solid var(--border);color:var(--muted)}
+  .login-screen{min-height:100vh;background:#0f1117;display:flex;align-items:center;justify-content:center}
+  .login-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:40px;width:100%;max-width:380px}
+  .login-logo{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+  .login-logo-icon{width:42px;height:42px;background:linear-gradient(135deg,#4f8ef7,#7c3aed);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px}
+  .login-logo-text h1{font-size:18px;font-weight:700;color:#fff}
+  .login-logo-text p{font-size:11px;color:var(--muted);margin-top:2px}
+  .login-company{font-size:11px;font-weight:700;color:#a78bfa;letter-spacing:1px;margin-bottom:4px}
+  .login-title{font-size:22px;font-weight:700;color:#fff;margin-bottom:6px}
+  .login-sub{font-size:13px;color:var(--muted);margin-bottom:28px}
+  .login-error{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:10px 14px;font-size:12px;color:#f87171;margin-bottom:16px}
+  .login-users{margin-top:20px;padding-top:20px;border-top:1px solid var(--border)}
+  .login-users-title{font-size:11px;color:var(--muted);margin-bottom:10px}
+  .login-user-row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;color:var(--muted)}
+  .login-user-row span{color:var(--text)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script>
+const{useState,useEffect,useMemo}=React;
+const DEFAULT_ASSET_TYPES=['Laptop','Monitor','Mouse','Keyboard','Headset','Webcam','Docking Station','Printer','Other'];
+const DEPARTMENTS=['Engineering','Finance','HR','Marketing','Operations','Sales','IT','Design'];
+function genId(prefix){return prefix+'-'+Math.random().toString(36).substr(2,6).toUpperCase()}
+function today(){return new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}
+function initials(name){return name.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase()}
+const INIT_EMPLOYEES=[
+  {id:'EMP-001',name:'Riya Sharma',department:'Engineering',email:'riya.sharma@company.com',joinDate:'Jan 2023'},
+  {id:'EMP-002',name:'Arjun Mehta',department:'Sales',email:'arjun.mehta@company.com',joinDate:'Mar 2022'},
+  {id:'EMP-003',name:'Priya Nair',department:'Design',email:'priya.nair@company.com',joinDate:'Jul 2023'},
+  {id:'EMP-004',name:'Vikram Singh',department:'Finance',email:'vikram.singh@company.com',joinDate:'Nov 2021'},
+  {id:'EMP-005',name:'Anika Patel',department:'Marketing',email:'anika.patel@company.com',joinDate:'Apr 2024'},
+];
+const INIT_ASSETS=[
+  {id:'AST-A1B2C3',type:'Laptop',brand:'Dell',model:'XPS 15',serial:'DL-9876543',status:'Assigned',condition:'Good',assignedTo:'EMP-001',purchaseDate:'Jan 2023'},
+  {id:'AST-D4E5F6',type:'Monitor',brand:'LG',model:'27UL600',serial:'LG-1234567',status:'Assigned',condition:'Good',assignedTo:'EMP-001',purchaseDate:'Feb 2023'},
+  {id:'AST-G7H8I9',type:'Laptop',brand:'Apple',model:'MacBook Pro M3',serial:'AP-5558821',status:'Assigned',condition:'Excellent',assignedTo:'EMP-003',purchaseDate:'Sep 2023'},
+  {id:'AST-J1K2L3',type:'Mouse',brand:'Logitech',model:'MX Master 3',serial:'LG-4445556',status:'Available',condition:'Good',assignedTo:null,purchaseDate:'Jun 2023'},
+  {id:'AST-M4N5O6',type:'Keyboard',brand:'Logitech',model:'MX Keys',serial:'LG-7778889',status:'Available',condition:'Good',assignedTo:null,purchaseDate:'Jun 2023'},
+  {id:'AST-P7Q8R9',type:'Laptop',brand:'Lenovo',model:'ThinkPad X1',serial:'LN-3331112',status:'Maintenance',condition:'Fair',assignedTo:null,purchaseDate:'May 2022'},
+  {id:'AST-S1T2U3',type:'Headset',brand:'Bose',model:'QC45',serial:'BS-9990001',status:'Assigned',condition:'Excellent',assignedTo:'EMP-002',purchaseDate:'Dec 2023'},
+  {id:'AST-V4W5X6',type:'Monitor',brand:'Samsung',model:'27" Curved',serial:'SM-2223334',status:'Available',condition:'Good',assignedTo:null,purchaseDate:'Mar 2023'},
+  {id:'AST-Y7Z8A9',type:'Webcam',brand:'Logitech',model:'C920',serial:'LG-6667778',status:'Assigned',condition:'Good',assignedTo:'EMP-004',purchaseDate:'Aug 2023'},
+  {id:'AST-B1C2D3',type:'Docking Station',brand:'Dell',model:'WD19 TB',serial:'DL-1112223',status:'Available',condition:'Good',assignedTo:null,purchaseDate:'Oct 2022'},
+];
+const INIT_HISTORY=[
+  {id:'HIS-1',assetId:'AST-A1B2C3',action:'Assigned',employeeId:'EMP-001',note:'Initial assignment',date:'15 Jan 2023',by:'IT Admin'},
+  {id:'HIS-2',assetId:'AST-D4E5F6',action:'Assigned',employeeId:'EMP-001',note:'New joiner setup',date:'16 Feb 2023',by:'IT Admin'},
+  {id:'HIS-3',assetId:'AST-G7H8I9',action:'Assigned',employeeId:'EMP-003',note:'Designer workstation',date:'10 Sep 2023',by:'IT Admin'},
+  {id:'HIS-4',assetId:'AST-P7Q8R9',action:'Unassigned',employeeId:'EMP-002',note:'Sent for repair',date:'01 Apr 2024',by:'IT Admin'},
+  {id:'HIS-5',assetId:'AST-S1T2U3',action:'Assigned',employeeId:'EMP-002',note:'Remote work setup',date:'05 Dec 2023',by:'IT Admin'},
+];
+function App({initialRole,onLogout}){
+  const[view,setView]=useState('dashboard');
+  const[assets,setAssets]=useState(INIT_ASSETS);
+  const[employees,setEmployees]=useState(INIT_EMPLOYEES);
+  const[history,setHistory]=useState(INIT_HISTORY);
+  const[modal,setModal]=useState(null);
+  const[notification,setNotification]=useState(null);
+  const[currentRole,setCurrentRole]=useState(initialRole||'admin');
+  const[adminUnlocked,setAdminUnlocked]=useState(false);
+  const[showPinModal,setShowPinModal]=useState(false);
+  const[pinInput,setPinInput]=useState('');
+  const[pinError,setPinError]=useState('');
+  const[assetTypes,setAssetTypes]=useState(DEFAULT_ASSET_TYPES);
+  const ADMIN_PIN='admin123';
+  function requireAdmin(fn){
+    if(adminUnlocked){fn();}
+    else{setShowPinModal(true);setPinInput('');setPinError('');}
+  }
+  function handlePinSubmit(){
+    if(pinInput===ADMIN_PIN){setAdminUnlocked(true);setShowPinModal(false);setPinError('');}
+    else{setPinError('Incorrect PIN. Try again.');}
+  }
+  const[assetFilter,setAssetFilter]=useState('All');
+  const[assetSearch,setAssetSearch]=useState('');
+  const[empSearch,setEmpSearch]=useState('');
+  useEffect(()=>{if(notification){const t=setTimeout(()=>setNotification(null),3000);return()=>clearTimeout(t)}},[notification]);
+  function notify(msg,type='success'){setNotification({msg,type})}
+  function addHistory(assetId,action,employeeId,note){
+    setHistory(h=>[{id:'HIS-'+Date.now(),assetId,action,employeeId,note,date:today(),by:currentRole==='admin'?'IT Admin':'IT Team'},...h]);
+  }
+  function saveAsset(data,editId){
+    if(editId){setAssets(a=>a.map(x=>x.id===editId?{...x,...data}:x));notify('Asset updated');}
+    else{const n={...data,id:genId('AST'),status:'Available',assignedTo:null};setAssets(a=>[n,...a]);addHistory(n.id,'Added',null,'Asset registered');notify('Asset added');}
+    setModal(null);
+  }
+  function removeAsset(id){
+    if(assets.find(x=>x.id===id).status==='Assigned'){notify('Unassign asset before removing','error');return;}
+    setAssets(as=>as.filter(x=>x.id!==id));notify('Asset removed');
+  }
+  function saveEmployee(data,editId){
+    if(editId){setEmployees(e=>e.map(x=>x.id===editId?{...x,...data}:x));notify('Employee updated');}
+    else{setEmployees(e=>[{...data,id:genId('EMP'),joinDate:today()},...e]);notify('Employee added');}
+    setModal(null);
+  }
+  function removeEmployee(id){
+    if(assets.some(a=>a.assignedTo===id)){notify('Unassign all assets first','error');return;}
+    setEmployees(e=>e.filter(x=>x.id!==id));notify('Employee removed');
+  }
+  function assignAsset(assetId,employeeId,note){
+    setAssets(a=>a.map(x=>x.id===assetId?{...x,status:'Assigned',assignedTo:employeeId}:x));
+    addHistory(assetId,'Assigned',employeeId,note||'Assigned to employee');
+    notify('Asset assigned');setModal(null);
+  }
+  function unassignAsset(assetId){
+    const a=assets.find(x=>x.id===assetId);
+    if(!a||!a.assignedTo)return;
+    setAssets(as=>as.map(x=>x.id===assetId?{...x,status:'Available',assignedTo:null}:x));
+    addHistory(assetId,'Unassigned',a.assignedTo,'Asset returned');
+    notify('Asset unassigned');setModal(null);
+  }
+  const stats={total:assets.length,assigned:assets.filter(a=>a.status==='Assigned').length,available:assets.filter(a=>a.status==='Available').length,maintenance:assets.filter(a=>a.status==='Maintenance').length};
+  const filteredAssets=useMemo(()=>assets.filter(a=>{
+    const mf=assetFilter==='All'||a.status===assetFilter||a.type===assetFilter;
+    const s=assetSearch.toLowerCase();
+    const ms=!s||a.id.toLowerCase().includes(s)||a.brand.toLowerCase().includes(s)||a.type.toLowerCase().includes(s)||a.serial.toLowerCase().includes(s)||(a.model||'').toLowerCase().includes(s);
+    return mf&&ms;
+  }),[assets,assetFilter,assetSearch]);
+  const filteredEmps=useMemo(()=>{const s=empSearch.toLowerCase();return employees.filter(e=>!s||e.name.toLowerCase().includes(s)||e.id.toLowerCase().includes(s)||e.department.toLowerCase().includes(s));},[employees,empSearch]);
+  const getEmployee=id=>employees.find(e=>e.id===id);
+  const getAsset=id=>assets.find(a=>a.id===id);
+  const getEmployeeAssets=id=>assets.filter(a=>a.assignedTo===id);
+  const statusColor=s=>s==='Assigned'?'badge-success':s==='Available'?'badge-blue':s==='Maintenance'?'badge-warn':'badge-muted';
+  const viewTitles={dashboard:'Dashboard',assets:'Asset Inventory',employees:'Employees',assignments:'Assignments',history:'Asset History',types:'Type Manager'};
+  return React.createElement(React.Fragment,null,
+    React.createElement('div',{className:'app'},
+      React.createElement('div',{className:'sidebar'},
+        React.createElement('div',{className:'logo'},
+          React.createElement('div',{className:'logo-company'},'Label UP'),
+          React.createElement('div',{className:'logo-icon'},'⬡'),
+          React.createElement('h1',null,'ITAM'),
+          React.createElement('p',null,'Asset Management')
+        ),
+        React.createElement('div',{className:'nav'},
+          React.createElement('div',{className:'nav-section'},'Navigation'),
+          [['dashboard','▦','Dashboard'],['assets','⬡','Asset Inventory'],['employees','◎','Employees'],['assignments','⇄','Assignments'],['history','◷','History'],['types','⊞','Type Manager']].map(([id,icon,label])=>
+            React.createElement('div',{key:id,className:`nav-item${view===id?' active':''}`,onClick:()=>setView(id)},
+              React.createElement('span',{className:'icon'},icon),label
+            )
+          ),
+          React.createElement('div',{className:'nav-section',style:{marginTop:16}},'Access'),
+          React.createElement('div',{className:'role-badge',style:{cursor:'pointer'},onClick:()=>{if(adminUnlocked){setAdminUnlocked(false);notify('Admin access locked');}else{setShowPinModal(true);setPinInput('');setPinError('');}}},
+            React.createElement('div',{style:{fontSize:12,marginBottom:4}},adminUnlocked?'🔓 Admin Unlocked':'🔒 View Only'),
+            React.createElement('div',{style:{fontSize:10,color:'var(--muted)'}},adminUnlocked?'Click to lock':'Click to unlock edit access')
+          )
+        )
+      ),
+      React.createElement('div',{className:'main'},
+        React.createElement('div',{className:'topbar'},
+          React.createElement('h2',null,viewTitles[view]),
+          React.createElement('div',{className:'topbar-actions'},
+            view==='assets'&&React.createElement('button',{className:'btn btn-primary',onClick:()=>requireAdmin(()=>setModal({type:'addAsset'}))},'+ Add Asset'),
+            view==='employees'&&React.createElement('button',{className:'btn btn-primary',onClick:()=>requireAdmin(()=>setModal({type:'addEmployee'}))},'+ Add Employee'),
+            view==='assignments'&&React.createElement('button',{className:'btn btn-primary',onClick:()=>setModal({type:'assign'})},'+ Assign Asset'),
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',borderRadius:8,background:adminUnlocked?'rgba(16,185,129,.1)':'rgba(136,146,164,.1)',border:`1px solid ${adminUnlocked?'rgba(16,185,129,.3)':'rgba(136,146,164,.2)'}`,fontSize:11,color:adminUnlocked?'#34d399':'var(--muted)'}},
+              adminUnlocked?'🔓 Admin':'🔒 View Only'
+            ),
+            onLogout&&React.createElement('button',{className:'btn btn-danger btn-sm',onClick:onLogout},'⏻ Logout')
+          )
+        ),
+        React.createElement('div',{className:'content'},
+          view==='dashboard'&&React.createElement(Dashboard,{stats,assets,employees,history,getEmployee,setView}),
+          view==='assets'&&React.createElement(AssetsView,{assets:filteredAssets,assetFilter,setAssetFilter,assetSearch,setAssetSearch,getEmployee,statusColor,setModal,removeAsset,unassignAsset,adminUnlocked,requireAdmin,assetTypes}),
+          view==='employees'&&React.createElement(EmployeesView,{employees:filteredEmps,assets,empSearch,setEmpSearch,getEmployeeAssets,setModal,removeEmployee,adminUnlocked,requireAdmin}),
+          view==='assignments'&&React.createElement(AssignmentsView,{assets,employees,getEmployee,statusColor,setModal,unassignAsset}),
+          view==='history'&&React.createElement(HistoryView,{history,assets,employees,getEmployee,getAsset}),
+          view==='types'&&React.createElement(TypeManager,{assetTypes,setAssetTypes,assets,adminUnlocked,requireAdmin})
+        )
+      )
+    ),
+    modal&&React.createElement(Modal,{modal,setModal,saveAsset,saveEmployee,assignAsset,unassignAsset,assets,employees,getEmployee,getAsset,assetTypes}),
+    showPinModal&&React.createElement('div',{className:'modal-overlay',onClick:()=>setShowPinModal(false)},
+      React.createElement('div',{className:'modal',style:{maxWidth:360},onClick:e=>e.stopPropagation()},
+        React.createElement('div',{className:'modal-header'},
+          React.createElement('h3',null,'🔐 Admin Access'),
+          React.createElement('button',{className:'modal-close',onClick:()=>setShowPinModal(false)},'×')
+        ),
+        React.createElement('div',{className:'modal-body'},
+          React.createElement('p',{style:{fontSize:13,color:'var(--muted)',marginBottom:16}},'Enter your admin password to unlock edit access.'),
+          pinError&&React.createElement('div',{className:'login-error'},pinError),
+          React.createElement('div',{className:'form-group'},
+            React.createElement('label',{className:'form-label'},'Admin Password'),
+            React.createElement('input',{className:'form-input',type:'password',value:pinInput,placeholder:'Enter password...',autoFocus:true,onChange:e=>setPinInput(e.target.value),onKeyDown:e=>e.key==='Enter'&&handlePinSubmit()})
+          )
+        ),
+        React.createElement('div',{className:'modal-footer'},
+          React.createElement('button',{className:'btn btn-secondary',onClick:()=>setShowPinModal(false)},'Cancel'),
+          React.createElement('button',{className:'btn btn-primary',onClick:handlePinSubmit},'Unlock')
+        )
+      )
+    ),
+    notification&&React.createElement('div',{className:`notification ${notification.type}`},
+      React.createElement('span',null,notification.type==='success'?'✓':'✕'),
+      React.createElement('span',null,notification.msg)
+    )
+  );
+}
+function Dashboard({stats,assets,employees,history,getEmployee,setView}){
+  const typeCounts={};assets.forEach(a=>{typeCounts[a.type]=(typeCounts[a.type]||0)+1});
+  const topTypes=Object.entries(typeCounts).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const assignedPct=stats.total?Math.round(stats.assigned/stats.total*100):0;
+  return React.createElement(React.Fragment,null,
+    React.createElement('div',{className:'stats-grid'},
+      React.createElement('div',{className:'stat-card accent'},React.createElement('div',{className:'stat-label'},'Total Assets'),React.createElement('div',{className:'stat-value'},stats.total),React.createElement('div',{className:'stat-sub'},employees.length+' employees')),
+      React.createElement('div',{className:'stat-card success'},React.createElement('div',{className:'stat-label'},'Assigned'),React.createElement('div',{className:'stat-value'},stats.assigned),React.createElement('div',{className:'stat-sub'},assignedPct+'% utilization')),
+      React.createElement('div',{className:'stat-card'},React.createElement('div',{className:'stat-label'},'Available'),React.createElement('div',{className:'stat-value',style:{color:'#7db4fa'}},stats.available),React.createElement('div',{className:'stat-sub'},'ready to assign')),
+      React.createElement('div',{className:'stat-card warn'},React.createElement('div',{className:'stat-label'},'Maintenance'),React.createElement('div',{className:'stat-value'},stats.maintenance),React.createElement('div',{className:'stat-sub'},'under service'))
+    ),
+    React.createElement('div',{className:'dash-grid'},
+      React.createElement('div',{className:'type-breakdown'},
+        React.createElement('div',{className:'section-header'},React.createElement('span',{className:'section-title'},'Assets by Type')),
+        topTypes.map(([type,count])=>React.createElement('div',{key:type,className:'type-row'},
+          React.createElement('span',{className:'type-label'},type),
+          React.createElement('div',{className:'type-bar-bg'},React.createElement('div',{className:'type-bar',style:{width:Math.round(count/stats.total*100)+'%'}})),
+          React.createElement('span',{className:'type-count'},count)
+        ))
+      ),
+      React.createElement('div',{className:'type-breakdown'},
+        React.createElement('div',{className:'section-header'},React.createElement('span',{className:'section-title'},'Recent Activity')),
+        React.createElement('ul',{className:'history-list'},
+          history.slice(0,6).map(h=>{
+            const emp=getEmployee(h.employeeId);
+            const asset=assets.find(a=>a.id===h.assetId);
+            return React.createElement('li',{key:h.id,className:'history-item'},
+              React.createElement('div',{className:`history-dot${h.action==='Unassigned'?' unassign':''}`}),
+              React.createElement('div',{className:'history-info'},
+                React.createElement('strong',null,h.action+': '+(asset?asset.type+' ('+asset.brand+')':'Unknown')),
+                React.createElement('small',null,(emp?emp.name:'—')+' • '+h.date)
+              )
+            );
+          })
+        )
+      )
+    ),
+    React.createElement('div',{className:'section-header'},
+      React.createElement('span',{className:'section-title'},'Recent Assets'),
+      React.createElement('button',{className:'btn btn-secondary btn-sm',onClick:()=>setView('assets')},'View All')
+    ),
+    React.createElement('div',{className:'table-wrap'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,['Asset ID','Type','Brand','Status','Assigned To'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('tbody',null,assets.slice(0,5).map(a=>{
+          const emp=getEmployee(a.assignedTo);
+          return React.createElement('tr',{key:a.id},
+            React.createElement('td',null,React.createElement('code',{style:{fontSize:11,color:'#7db4fa'}},a.id)),
+            React.createElement('td',null,a.type),
+            React.createElement('td',null,a.brand),
+            React.createElement('td',null,React.createElement('span',{className:`badge ${a.status==='Assigned'?'badge-success':a.status==='Available'?'badge-blue':'badge-warn'}`},a.status)),
+            React.createElement('td',null,emp?React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{className:'avatar avatar-sm'},initials(emp.name)),emp.name):React.createElement('span',{style:{color:'var(--muted)'}},'-'))
+          );
+        }))
+      )
+    )
+  );
+}
+function AssetsView({assets,assetFilter,setAssetFilter,assetSearch,setAssetSearch,getEmployee,statusColor,setModal,removeAsset,unassignAsset,adminUnlocked,requireAdmin,assetTypes}){
+  const[sortField,setSortField]=useState(null);
+  const filters=['All','Available','Assigned','Maintenance',...assetTypes.slice(0,4)];
+  const displayAssets=sortField?[...assets].sort((a,b)=>{
+    if(sortField==='brand')return(a.brand+a.type).localeCompare(b.brand+b.type);
+    if(sortField==='type')return a.type.localeCompare(b.type);
+    if(sortField==='assignedTo'){
+      const ea=getEmployee(a.assignedTo);const eb=getEmployee(b.assignedTo);
+      return(ea?ea.name:'zzz').localeCompare(eb?eb.name:'zzz');
+    }
+    return 0;
+  }):assets;
+  function toggleSort(field){setSortField(s=>s===field?null:field);}
+  return React.createElement(React.Fragment,null,
+    React.createElement('div',{className:'filter-bar'},
+      React.createElement('div',{className:'search-bar'},
+        React.createElement('span',{className:'search-icon'},'⌕'),
+        React.createElement('input',{placeholder:'Search assets...',value:assetSearch,onChange:e=>setAssetSearch(e.target.value)})
+      ),
+      React.createElement('button',{className:`btn btn-sm ${sortField==='brand'?'btn-primary':'btn-secondary'}`,onClick:()=>toggleSort('brand')},'↑ Brand A→Z'),
+      React.createElement('button',{className:`btn btn-sm ${sortField==='type'?'btn-primary':'btn-secondary'}`,onClick:()=>toggleSort('type')},'↑ Type A→Z'),
+      React.createElement('button',{className:`btn btn-sm ${sortField==='assignedTo'?'btn-primary':'btn-secondary'}`,onClick:()=>toggleSort('assignedTo')},'↑ Employee A→Z'),
+      filters.map(f=>React.createElement('div',{key:f,className:`filter-chip${assetFilter===f?' active':''}`,onClick:()=>setAssetFilter(f)},f))
+    ),
+    React.createElement('div',{className:'table-wrap'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,
+          ['Asset ID',
+           React.createElement('span',{style:{cursor:'pointer',userSelect:'none'},onClick:()=>toggleSort('type')},'Type '+(sortField==='type'?'↑':'')),
+           React.createElement('span',{style:{cursor:'pointer',userSelect:'none'},onClick:()=>toggleSort('brand')},'Brand / Model '+(sortField==='brand'?'↑':'')),
+           'Serial No.','Status','Condition',
+           React.createElement('span',{style:{cursor:'pointer',userSelect:'none'},onClick:()=>toggleSort('assignedTo')},'Assigned To '+(sortField==='assignedTo'?'↑':'')),
+           'Actions'
+          ].map((h,i)=>React.createElement('th',{key:i},h))
+        )),
+        React.createElement('tbody',null,
+          displayAssets.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:8},React.createElement('div',{className:'empty-state'},React.createElement('div',{className:'empty-icon'},'⬡'),React.createElement('p',null,'No assets found')))):
+          displayAssets.map(a=>{
+            const emp=getEmployee(a.assignedTo);
+            return React.createElement('tr',{key:a.id},
+              React.createElement('td',null,React.createElement('code',{style:{fontSize:11,color:'#7db4fa'}},a.id)),
+              React.createElement('td',null,a.type),
+              React.createElement('td',null,a.brand,a.model&&React.createElement('span',{style:{color:'var(--muted)',marginLeft:4,fontSize:11}},a.model)),
+              React.createElement('td',null,React.createElement('span',{style:{fontSize:11,color:'var(--muted)'}},a.serial)),
+              React.createElement('td',null,React.createElement('span',{className:`badge ${statusColor(a.status)}`},a.status)),
+              React.createElement('td',null,React.createElement('span',{className:'badge badge-muted'},a.condition)),
+              React.createElement('td',null,emp?React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{className:'avatar avatar-sm'},initials(emp.name)),emp.name):React.createElement('span',{style:{color:'var(--muted)',fontSize:12}},'-')),
+              React.createElement('td',null,React.createElement('div',{style:{display:'flex',gap:4}},
+                a.status==='Available'&&React.createElement('button',{className:'btn btn-success btn-sm',onClick:()=>setModal({type:'assign',assetId:a.id})},'Assign'),
+                a.status==='Assigned'&&React.createElement('button',{className:'btn btn-secondary btn-sm',onClick:()=>unassignAsset(a.id)},'Unassign'),
+                adminUnlocked&&React.createElement(React.Fragment,null,
+                  React.createElement('button',{className:'btn btn-secondary btn-sm',onClick:()=>setModal({type:'editAsset',asset:a})},'Edit'),
+                  React.createElement('button',{className:'btn btn-danger btn-sm',onClick:()=>removeAsset(a.id)},'✕')
+                ),
+                !adminUnlocked&&React.createElement('button',{className:'btn btn-secondary btn-sm',onClick:()=>requireAdmin(()=>{})},'\uD83D\uDD12')
+              ))
+            );
+          })
+        )
+      )
+    )
+  );
+}
+function EmployeesView({employees,assets,empSearch,setEmpSearch,getEmployeeAssets,setModal,removeEmployee,adminUnlocked,requireAdmin}){
+  const[selectedEmp,setSelectedEmp]=useState(null);
+  const selectedEmpData=employees.find(e=>e.id===selectedEmp);
+  const selectedEmpAssets=selectedEmp?getEmployeeAssets(selectedEmp):[];
+  return React.createElement(React.Fragment,null,
+    React.createElement('div',{className:'filter-bar'},
+      React.createElement('div',{className:'search-bar'},
+        React.createElement('span',{className:'search-icon'},'⌕'),
+        React.createElement('input',{placeholder:'Search employees...',value:empSearch,onChange:e=>setEmpSearch(e.target.value)})
+      )
+    ),
+    React.createElement('div',{className:'table-wrap'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,['Employee','ID','Department','Total Assets','Actions'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('tbody',null,employees.map(e=>{
+          const ea=getEmployeeAssets(e.id);
+          return React.createElement('tr',{key:e.id},
+            React.createElement('td',null,
+              React.createElement('div',{style:{display:'flex',alignItems:'center',gap:10},onClick:()=>setSelectedEmp(e.id),style:{display:'flex',alignItems:'center',gap:10,cursor:'pointer'}},
+                React.createElement('div',{className:'avatar'},initials(e.name)),
+                React.createElement('div',null,
+                  React.createElement('div',{style:{fontWeight:500,color:'#4f8ef7',textDecoration:'underline',cursor:'pointer'}},e.name),
+                  React.createElement('div',{style:{fontSize:11,color:'var(--muted)'}},e.email)
+                )
+              )
+            ),
+            React.createElement('td',null,React.createElement('code',{style:{fontSize:11,color:'#7db4fa'}},e.id)),
+            React.createElement('td',null,React.createElement('span',{className:'chip'},e.department)),
+            React.createElement('td',null,
+              React.createElement('span',{className:`badge ${ea.length>0?'badge-success':'badge-muted'}`,style:{cursor:'pointer'},onClick:()=>setSelectedEmp(e.id)},
+                ea.length+' asset'+(ea.length!==1?'s':'')
+              )
+            ),
+            React.createElement('td',null,
+              adminUnlocked?React.createElement('div',{style:{display:'flex',gap:4}},
+                React.createElement('button',{className:'btn btn-secondary btn-sm',onClick:()=>setModal({type:'editEmployee',employee:e})},'Edit'),
+                React.createElement('button',{className:'btn btn-danger btn-sm',onClick:()=>removeEmployee(e.id)},'✕')
+              ):React.createElement('button',{className:'btn btn-secondary btn-sm',onClick:()=>requireAdmin(()=>{})},'\uD83D\uDD12')
+            )
+          );
+        }))
+      )
+    ),
+    selectedEmp&&selectedEmpData&&React.createElement('div',{className:'modal-overlay',onClick:()=>setSelectedEmp(null)},
+      React.createElement('div',{className:'modal',style:{maxWidth:560},onClick:e=>e.stopPropagation()},
+        React.createElement('div',{className:'modal-header'},
+          React.createElement('div',{style:{display:'flex',alignItems:'center',gap:12}},
+            React.createElement('div',{className:'avatar'},initials(selectedEmpData.name)),
+            React.createElement('div',null,
+              React.createElement('h3',null,selectedEmpData.name),
+              React.createElement('div',{style:{fontSize:12,color:'var(--muted)',marginTop:2}},selectedEmpData.id+' · '+selectedEmpData.department)
+            )
+          ),
+          React.createElement('button',{className:'modal-close',onClick:()=>setSelectedEmp(null)},'×')
+        ),
+        React.createElement('div',{className:'modal-body'},
+          React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:16}},
+            React.createElement('div',{className:'stat-card',style:{padding:'10px 14px'}},React.createElement('div',{className:'stat-label'},'Total'),React.createElement('div',{className:'stat-value',style:{fontSize:22}},selectedEmpAssets.length)),
+            React.createElement('div',{className:'stat-card',style:{padding:'10px 14px'}},React.createElement('div',{className:'stat-label'},'Types'),React.createElement('div',{className:'stat-value',style:{fontSize:22,color:'#7db4fa'}},[...new Set(selectedEmpAssets.map(a=>a.type))].length)),
+            React.createElement('div',{className:'stat-card',style:{padding:'10px 14px'}},React.createElement('div',{className:'stat-label'},'Email'),React.createElement('div',{style:{fontSize:11,color:'var(--muted)',marginTop:4,wordBreak:'break-all'}},selectedEmpData.email))
+          ),
+          selectedEmpAssets.length===0?
+            React.createElement('div',{className:'empty-state'},React.createElement('div',{className:'empty-icon'},'📦'),React.createElement('p',null,'No assets assigned')):
+            React.createElement('div',{className:'table-wrap'},
+              React.createElement('table',null,
+                React.createElement('thead',null,React.createElement('tr',null,['Type','Brand / Model','Serial','Status','Condition'].map(h=>React.createElement('th',{key:h},h)))),
+                React.createElement('tbody',null,selectedEmpAssets.map(a=>
+                  React.createElement('tr',{key:a.id},
+                    React.createElement('td',null,React.createElement('span',{className:'badge badge-blue'},a.type)),
+                    React.createElement('td',null,a.brand+(a.model?' '+a.model:'')),
+                    React.createElement('td',null,React.createElement('span',{style:{fontSize:11,color:'var(--muted)'}},a.serial)),
+                    React.createElement('td',null,React.createElement('span',{className:'badge badge-success'},'Assigned')),
+                    React.createElement('td',null,React.createElement('span',{className:'badge badge-muted'},a.condition))
+                  )
+                ))
+              )
+            )
+        ),
+        React.createElement('div',{className:'modal-footer'},
+          React.createElement('button',{className:'btn btn-secondary',onClick:()=>setSelectedEmp(null)},'Close')
+        )
+      )
+    )
+  );
+}
+function AssignmentsView({assets,employees,getEmployee,statusColor,setModal,unassignAsset}){
+  const assigned=assets.filter(a=>a.status==='Assigned');
+  return React.createElement(React.Fragment,null,
+    React.createElement('div',{className:'stats-grid',style:{gridTemplateColumns:'repeat(3,1fr)',marginBottom:20}},
+      React.createElement('div',{className:'stat-card success'},React.createElement('div',{className:'stat-label'},'Active Assignments'),React.createElement('div',{className:'stat-value'},assigned.length)),
+      React.createElement('div',{className:'stat-card'},React.createElement('div',{className:'stat-label'},'Employees with Assets'),React.createElement('div',{className:'stat-value',style:{color:'#7db4fa'}},[...new Set(assigned.map(a=>a.assignedTo))].length)),
+      React.createElement('div',{className:'stat-card warn'},React.createElement('div',{className:'stat-label'},'Available Assets'),React.createElement('div',{className:'stat-value'},assets.filter(a=>a.status==='Available').length))
+    ),
+    React.createElement('div',{className:'table-wrap'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,['Asset','Type','Assigned To','Department','Actions'].map(h=>React.createElement('th',{key:h},h)))),
+        React.createElement('tbody',null,
+          assigned.length===0?React.createElement('tr',null,React.createElement('td',{colSpan:5},React.createElement('div',{className:'empty-state'},React.createElement('div',{className:'empty-icon'},'⇄'),React.createElement('p',null,'No assignments')))):
+          assigned.map(a=>{
+            const emp=getEmployee(a.assignedTo);
+            return React.createElement('tr',{key:a.id},
+              React.createElement('td',null,React.createElement('div',null,React.createElement('div',{style:{fontWeight:500}},a.brand+' '+(a.model||'')),React.createElement('code',{style:{fontSize:10,color:'var(--muted)'}},a.id))),
+              React.createElement('td',null,a.type),
+              React.createElement('td',null,emp?React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8}},React.createElement('div',{className:'avatar avatar-sm'},initials(emp.name)),React.createElement('div',null,React.createElement('div',{style:{fontWeight:500}},emp.name),React.createElement('div',{style:{fontSize:11,color:'var(--muted)'}},emp.id))):'-'),
+              React.createElement('td',null,emp?React.createElement('span',{className:'chip'},emp.department):'-'),
+              React.createElement('td',null,React.createElement('button',{className:'btn btn-secondary btn-sm',onClick:()=>unassignAsset(a.id)},'Unassign'))
+            );
+          })
+        )
+      )
+    )
+  );
+}
+function HistoryView({history,assets,employees,getEmployee,getAsset}){
+  return React.createElement('div',{className:'table-wrap'},
+    React.createElement('table',null,
+      React.createElement('thead',null,React.createElement('tr',null,['Date','Action','Asset','Employee','Note','By'].map(h=>React.createElement('th',{key:h},h)))),
+      React.createElement('tbody',null,history.map(h=>{
+        const emp=getEmployee(h.employeeId);
+        const asset=getAsset(h.assetId);
+        return React.createElement('tr',{key:h.id},
+          React.createElement('td',null,React.createElement('span',{style:{fontSize:12,color:'var(--muted)'}},h.date)),
+          React.createElement('td',null,React.createElement('span',{className:`badge ${h.action==='Assigned'?'badge-success':h.action==='Unassigned'?'badge-muted':'badge-blue'}`},h.action)),
+          React.createElement('td',null,asset?React.createElement('div',null,React.createElement('div',null,asset.brand+' '+asset.type),React.createElement('code',{style:{fontSize:10,color:'var(--muted)'}},h.assetId)):React.createElement('code',{style:{fontSize:11}},h.assetId)),
+          React.createElement('td',null,emp?React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{className:'avatar avatar-sm'},initials(emp.name)),emp.name):React.createElement('span',{style:{color:'var(--muted)',fontSize:12}},'-')),
+          React.createElement('td',null,React.createElement('span',{style:{fontSize:12,color:'var(--muted)'}},h.note)),
+          React.createElement('td',null,React.createElement('span',{className:'badge badge-muted'},h.by))
+        );
+      }))
+    )
+  );
+}
+function TypeManager({assetTypes,setAssetTypes,assets,adminUnlocked,requireAdmin}){
+  const[newType,setNewType]=useState('');
+  const[error,setError]=useState('');
+  function addType(){
+    const t=newType.trim();
+    if(!t){setError('Please enter a type name.');return;}
+    if(assetTypes.map(x=>x.toLowerCase()).includes(t.toLowerCase())){setError('This type already exists.');return;}
+    setAssetTypes(prev=>[...prev,t]);
+    setNewType('');setError('');
+  }
+  function removeType(t){
+    const inUse=assets.some(a=>a.type===t);
+    if(inUse){setError(`"${t}" is used by existing assets. Reassign them first.`);return;}
+    setAssetTypes(prev=>prev.filter(x=>x!==t));setError('');
+  }
+  return React.createElement(React.Fragment,null,
+    React.createElement('div',{className:'detail-section',style:{marginBottom:16}},
+      React.createElement('h4',null,'About Type Manager'),
+      React.createElement('p',{style:{fontSize:13,color:'var(--muted)',lineHeight:1.6}},'Control exactly which asset types appear in the Add/Edit Asset dropdown. Only admin can add or remove types. Employees will only see the types you define here.')
+    ),
+    !adminUnlocked&&React.createElement('div',{style:{background:'rgba(245,158,11,.08)',border:'1px solid rgba(245,158,11,.3)',borderRadius:10,padding:'12px 16px',marginBottom:16,fontSize:13,color:'#fbbf24',display:'flex',alignItems:'center',gap:8}},
+      '🔒 Unlock admin access to add or remove types.'
+    ),
+    adminUnlocked&&React.createElement('div',{className:'detail-section',style:{marginBottom:16}},
+      React.createElement('h4',null,'Add New Type'),
+      error&&React.createElement('div',{className:'login-error',style:{marginBottom:10}},error),
+      React.createElement('div',{style:{display:'flex',gap:8}},
+        React.createElement('input',{className:'form-input',value:newType,placeholder:'e.g. USB Hub, Tablet, SIM Card...',onChange:e=>{setNewType(e.target.value);setError('');},onKeyDown:e=>e.key==='Enter'&&addType(),style:{flex:1}}),
+        React.createElement('button',{className:'btn btn-primary',onClick:addType},'+ Add Type')
+      )
+    ),
+    React.createElement('div',{className:'table-wrap'},
+      React.createElement('table',null,
+        React.createElement('thead',null,React.createElement('tr',null,
+          ['#','Type Name','Assets Using This Type','Action'].map(h=>React.createElement('th',{key:h},h))
+        )),
+        React.createElement('tbody',null,
+          assetTypes.map((t,i)=>{
+            const count=assets.filter(a=>a.type===t).length;
+            return React.createElement('tr',{key:t},
+              React.createElement('td',null,React.createElement('span',{style:{color:'var(--muted)',fontSize:12}},i+1)),
+              React.createElement('td',null,React.createElement('span',{className:'badge badge-blue',style:{fontSize:12}},t)),
+              React.createElement('td',null,
+                count>0
+                  ?React.createElement('span',{className:'badge badge-success'},count+' asset'+(count!==1?'s':''))
+                  :React.createElement('span',{style:{color:'var(--muted)',fontSize:12}},'Not in use')
+              ),
+              React.createElement('td',null,
+                adminUnlocked
+                  ?React.createElement('button',{className:'btn btn-danger btn-sm',onClick:()=>removeType(t),title:count>0?'Cannot remove — in use':'Remove type'},count>0?'🔒 In Use':'✕ Remove')
+                  :React.createElement('button',{className:'btn btn-secondary btn-sm',onClick:()=>requireAdmin(()=>{})},'🔒')
+              )
+            );
+          })
+        )
+      )
+    )
+  );
+}
+function Modal({modal,setModal,saveAsset,saveEmployee,assignAsset,unassignAsset,assets,employees,getEmployee,getAsset,assetTypes}){
+  const[form,setForm]=useState(modal.asset||modal.employee||{});
+  const[selectedEmp,setSelectedEmp]=useState(null);
+  const[chosenAsset,setChosenAsset]=useState(modal.assetId||null);
+  const[note,setNote]=useState('');
+  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  function close(){setModal(null)}
+  if(modal.type==='addAsset'||modal.type==='editAsset'){
+    const isEdit=modal.type==='editAsset';
+    return React.createElement('div',{className:'modal-overlay',onClick:close},
+      React.createElement('div',{className:'modal',onClick:e=>e.stopPropagation()},
+        React.createElement('div',{className:'modal-header'},React.createElement('h3',null,isEdit?'Edit Asset':'Add New Asset'),React.createElement('button',{className:'modal-close',onClick:close},'×')),
+        React.createElement('div',{className:'modal-body'},
+          React.createElement('div',{className:'form-row'},
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Asset Type'),React.createElement('select',{className:'form-select',value:form.type||'',onChange:e=>set('type',e.target.value)},React.createElement('option',{value:''},'Select type...'),assetTypes.map(t=>React.createElement('option',{key:t,value:t},t)))),
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Brand'),React.createElement('input',{className:'form-input',value:form.brand||'',placeholder:'e.g. Dell',onChange:e=>set('brand',e.target.value)}))
+          ),
+          React.createElement('div',{className:'form-row'},
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Model'),React.createElement('input',{className:'form-input',value:form.model||'',placeholder:'e.g. XPS 15',onChange:e=>set('model',e.target.value)})),
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Serial Number'),React.createElement('input',{className:'form-input',value:form.serial||'',placeholder:'Serial no.',onChange:e=>set('serial',e.target.value)}))
+          ),
+          React.createElement('div',{className:'form-row'},
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Condition'),React.createElement('select',{className:'form-select',value:form.condition||'Good',onChange:e=>set('condition',e.target.value)},['Excellent','Good','Fair','Poor'].map(c=>React.createElement('option',{key:c,value:c},c)))),
+            isEdit&&React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Status'),React.createElement('select',{className:'form-select',value:form.status||'Available',onChange:e=>set('status',e.target.value)},['Available','Maintenance','Retired'].map(s=>React.createElement('option',{key:s,value:s},s))))
+          ),
+          React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Purchase Date'),React.createElement('input',{className:'form-input',type:'month',value:form.purchaseDate||'',onChange:e=>set('purchaseDate',e.target.value)}))
+        ),
+        React.createElement('div',{className:'modal-footer'},
+          React.createElement('button',{className:'btn btn-secondary',onClick:close},'Cancel'),
+          React.createElement('button',{className:'btn btn-primary',onClick:()=>{if(!form.type||!form.brand||!form.serial){alert('Fill required fields');return}saveAsset(form,isEdit?modal.asset.id:null);}},isEdit?'Save Changes':'Add Asset')
+        )
+      )
+    );
+  }
+  if(modal.type==='addEmployee'||modal.type==='editEmployee'){
+    const isEdit=modal.type==='editEmployee';
+    return React.createElement('div',{className:'modal-overlay',onClick:close},
+      React.createElement('div',{className:'modal',onClick:e=>e.stopPropagation()},
+        React.createElement('div',{className:'modal-header'},React.createElement('h3',null,isEdit?'Edit Employee':'Add Employee'),React.createElement('button',{className:'modal-close',onClick:close},'×')),
+        React.createElement('div',{className:'modal-body'},
+          React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Full Name'),React.createElement('input',{className:'form-input',value:form.name||'',placeholder:'Full name',onChange:e=>set('name',e.target.value)})),
+          React.createElement('div',{className:'form-row'},
+            !isEdit&&React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Employee ID'),React.createElement('input',{className:'form-input',value:form.id||'',placeholder:'EMP-006',onChange:e=>set('id',e.target.value)})),
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Department'),React.createElement('select',{className:'form-select',value:form.department||'',onChange:e=>set('department',e.target.value)},React.createElement('option',{value:''},'Select...'),DEPARTMENTS.map(d=>React.createElement('option',{key:d,value:d},d))))
+          ),
+          React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Email'),React.createElement('input',{className:'form-input',type:'email',value:form.email||'',placeholder:'email@company.com',onChange:e=>set('email',e.target.value)}))
+        ),
+        React.createElement('div',{className:'modal-footer'},
+          React.createElement('button',{className:'btn btn-secondary',onClick:close},'Cancel'),
+          React.createElement('button',{className:'btn btn-primary',onClick:()=>{if(!form.name||!form.department){alert('Fill required fields');return}saveEmployee(form,isEdit?modal.employee.id:null);}},isEdit?'Save Changes':'Add Employee')
+        )
+      )
+    );
+  }
+  if(modal.type==='assign'){
+    const availableAssets=assets.filter(a=>a.status==='Available');
+    return React.createElement('div',{className:'modal-overlay',onClick:close},
+      React.createElement('div',{className:'modal',onClick:e=>e.stopPropagation()},
+        React.createElement('div',{className:'modal-header'},React.createElement('h3',null,'Assign Asset'),React.createElement('button',{className:'modal-close',onClick:close},'×')),
+        React.createElement('div',{className:'modal-body'},
+          !modal.assetId&&React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Select Asset'),React.createElement('select',{className:'form-select',value:chosenAsset||'',onChange:e=>setChosenAsset(e.target.value)},React.createElement('option',{value:''},'Choose available asset...'),availableAssets.map(a=>React.createElement('option',{key:a.id,value:a.id},a.brand+' '+a.type+' — '+a.id)))),
+          modal.assetId&&React.createElement('div',{className:'detail-section'},React.createElement('div',{className:'detail-row'},React.createElement('span',{className:'detail-key'},'Asset'),React.createElement('span',{className:'detail-val'},(()=>{const a=getAsset(modal.assetId);return a?a.brand+' '+a.type:modal.assetId})()))),
+          React.createElement('div',{className:'form-group'},
+            React.createElement('label',{className:'form-label'},'Select Employee'),
+            employees.map(e=>React.createElement('div',{key:e.id,className:`assign-user-card${selectedEmp===e.id?' selected':''}`,onClick:()=>setSelectedEmp(e.id)},
+              React.createElement('div',{className:'avatar avatar-sm'},initials(e.name)),
+              React.createElement('div',null,React.createElement('div',{style:{fontWeight:500,fontSize:13}},e.name),React.createElement('div',{style:{fontSize:11,color:'var(--muted)'}},e.id+' · '+e.department))
+            ))
+          ),
+          React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Note (optional)'),React.createElement('input',{className:'form-input',value:note,placeholder:'Assignment reason...',onChange:e=>setNote(e.target.value)}))
+        ),
+        React.createElement('div',{className:'modal-footer'},
+          React.createElement('button',{className:'btn btn-secondary',onClick:close},'Cancel'),
+          React.createElement('button',{className:'btn btn-primary',onClick:()=>{const aid=chosenAsset||modal.assetId;if(!aid||!selectedEmp){alert('Select asset and employee');return}assignAsset(aid,selectedEmp,note);}},'Assign Asset')
+        )
+      )
+    );
+  }
+  return null;
+}
+const USERS=[
+  {username:'admin',password:'admin123',role:'admin',label:'IT Admin'},
+];
+function Login({onLogin}){
+  const[username,setUsername]=useState('');
+  const[password,setPassword]=useState('');
+  const[showPass,setShowPass]=useState(false);
+  const[error,setError]=useState('');
+  function handleLogin(){
+    const user=USERS.find(u=>u.username===username.trim()&&u.password===password);
+    if(user){onLogin(user);}
+    else{setError('Invalid username or password. Please try again.');}
+  }
+  function handleKey(e){if(e.key==='Enter')handleLogin();}
+  return React.createElement('div',{className:'login-screen'},
+    React.createElement('div',{className:'login-card'},
+      React.createElement('div',{className:'login-logo'},
+        React.createElement('div',{className:'login-logo-icon'},'⬡'),
+        React.createElement('div',{className:'login-logo-text'},
+          React.createElement('div',{className:'login-company'},'Label UP'),
+          React.createElement('h1',null,'ITAM'),
+          React.createElement('p',null,'IT Asset Management')
+        )
+      ),
+      React.createElement('div',{className:'login-title'},'Welcome back'),
+      React.createElement('div',{className:'login-sub'},'Sign in to access the asset management system'),
+      error&&React.createElement('div',{className:'login-error'},error),
+      React.createElement('div',{className:'form-group'},
+        React.createElement('label',{className:'form-label'},'Username'),
+        React.createElement('input',{className:'form-input',value:username,placeholder:'Enter username',onChange:e=>setUsername(e.target.value),onKeyDown:handleKey,autoFocus:true})
+      ),
+      React.createElement('div',{className:'form-group',style:{position:'relative'}},
+        React.createElement('label',{className:'form-label'},'Password'),
+        React.createElement('input',{className:'form-input',type:showPass?'text':'password',value:password,placeholder:'Enter password',onChange:e=>setPassword(e.target.value),onKeyDown:handleKey,style:{paddingRight:40}}),
+        React.createElement('span',{onClick:()=>setShowPass(s=>!s),style:{position:'absolute',right:12,top:32,cursor:'pointer',color:'var(--muted)',fontSize:13}},showPass?'🙈':'👁')
+      ),
+      React.createElement('button',{className:'btn btn-primary',style:{width:'100%',justifyContent:'center',padding:'10px',fontSize:13,marginTop:4},onClick:handleLogin},'Sign In')
+    )
+  );
+}
+function Root(){
+  const[loggedIn,setLoggedIn]=useState(false);
+  const[userRole,setUserRole]=useState('admin');
+  function handleLogin(user){setUserRole(user.role);setLoggedIn(true);}
+  function handleLogout(){setLoggedIn(false);}
+  if(!loggedIn)return React.createElement(Login,{onLogin:handleLogin});
+  return React.createElement(App,{initialRole:userRole,onLogout:handleLogout});
+}
+ReactDOM.render(React.createElement(Root),document.getElementById('root'));
+</script>
+</body>
+</html>
