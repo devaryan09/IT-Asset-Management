@@ -124,7 +124,7 @@ const {useState,useEffect,useMemo,useRef}=React;
 const DEFAULT_TYPES=['Laptop','Monitor','Mouse','Keyboard','Headset','Webcam','Docking Station','Printer','Other'];
 const DEPARTMENTS=['Engineering','Finance','HR','Marketing','Operations','Sales','IT','Design'];
 const DB_KEY='itam_v3';
-const ADMIN_PASS='admin123';
+const ADMIN_PASS='navraj@123';
 
 // ---- FIREBASE ----
 const firebaseConfig = {
@@ -237,15 +237,59 @@ const INIT_HISTORY=[
 ];
 
 // ---- LOGIN ----
+const LOGIN_USER='labelupitam';
+const LOGIN_PASS='oneteamify@123';
 function Login({onLogin}){
   const [u,setU]=useState('');
   const [p,setP]=useState('');
   const [show,setShow]=useState(false);
   const [err,setErr]=useState('');
+  const [attempts,setAttempts]=useState(0);
+  const [locked,setLocked]=useState(false);
+  const [countdown,setCountdown]=useState(0);
+
+  useEffect(()=>{
+    // Check if locked out
+    try{
+      const lockData=JSON.parse(localStorage.getItem('itam_lock')||'{}');
+      if(lockData.until&&Date.now()<lockData.until){
+        setLocked(true);
+        const remaining=Math.ceil((lockData.until-Date.now())/1000);
+        setCountdown(remaining);
+      }
+    }catch(e){}
+  },[]);
+
+  useEffect(()=>{
+    if(countdown>0){
+      const t=setTimeout(()=>{
+        setCountdown(c=>c-1);
+        if(countdown===1){setLocked(false);setAttempts(0);localStorage.removeItem('itam_lock');}
+      },1000);
+      return()=>clearTimeout(t);
+    }
+  },[countdown]);
+
   function attempt(){
-    if(u.trim()==='admin'&&p===ADMIN_PASS){onLogin('admin');}
-    else{setErr('Invalid username or password.');}
+    if(locked)return;
+    if(u.trim()===LOGIN_USER&&p===LOGIN_PASS){
+      setAttempts(0);localStorage.removeItem('itam_lock');
+      onLogin('admin');
+    }else{
+      const newAttempts=attempts+1;
+      setAttempts(newAttempts);
+      if(newAttempts>=3){
+        // Lock for 30 seconds
+        const until=Date.now()+30000;
+        try{localStorage.setItem('itam_lock',JSON.stringify({until}));}catch(e){}
+        setLocked(true);setCountdown(30);
+        setErr('Too many failed attempts. Locked for 30 seconds.');
+      }else{
+        setErr('Invalid username or password. ('+(3-newAttempts)+' attempts remaining)');
+      }
+    }
   }
+
   return React.createElement('div',{className:'login-screen'},
     React.createElement('div',{className:'login-card'},
       React.createElement('div',{className:'login-logo'},
@@ -259,16 +303,27 @@ function Login({onLogin}){
       React.createElement('div',{className:'login-title'},'Welcome back'),
       React.createElement('div',{className:'login-sub'},'Sign in to access the system'),
       err&&React.createElement('div',{className:'login-error'},err),
+      locked&&React.createElement('div',{style:{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:7,padding:'10px 12px',fontSize:12,color:'#f87171',marginBottom:14,textAlign:'center'}},
+        '🔒 Account locked. Try again in ',React.createElement('strong',null,countdown),' seconds.'
+      ),
       React.createElement('div',{className:'form-group'},
         React.createElement('label',{className:'form-label'},'Username'),
-        React.createElement('input',{className:'form-input',value:u,placeholder:'Enter username',onChange:e=>setU(e.target.value),onKeyDown:e=>e.key==='Enter'&&attempt(),autoFocus:true})
+        React.createElement('input',{className:'form-input',value:u,placeholder:'Enter username',onChange:e=>setU(e.target.value),onKeyDown:e=>e.key==='Enter'&&attempt(),autoFocus:true,disabled:locked})
       ),
       React.createElement('div',{className:'form-group',style:{position:'relative'}},
         React.createElement('label',{className:'form-label'},'Password'),
-        React.createElement('input',{className:'form-input',type:show?'text':'password',value:p,placeholder:'Enter password',onChange:e=>setP(e.target.value),onKeyDown:e=>e.key==='Enter'&&attempt(),style:{paddingRight:40}}),
+        React.createElement('input',{className:'form-input',type:show?'text':'password',value:p,placeholder:'Enter password',onChange:e=>setP(e.target.value),onKeyDown:e=>e.key==='Enter'&&attempt(),style:{paddingRight:50},disabled:locked}),
         React.createElement('span',{className:'show-hide',onClick:()=>setShow(s=>!s)},show?'Hide':'Show')
       ),
-      React.createElement('button',{className:'btn btn-primary',style:{width:'100%',justifyContent:'center',padding:'9px'},onClick:attempt},'Sign In')
+      React.createElement('button',{className:'btn btn-primary',style:{width:'100%',justifyContent:'center',padding:'9px',opacity:locked?.5:1},onClick:attempt,disabled:locked},
+        locked?'🔒 Locked ('+countdown+'s)':'Sign In'
+      ),
+      React.createElement('div',{style:{marginTop:16,padding:'10px 12px',background:'rgba(79,142,247,.06)',border:'1px solid rgba(79,142,247,.15)',borderRadius:8,fontSize:11,color:'var(--muted)'}},
+        React.createElement('div',{style:{fontWeight:600,color:'var(--accent)',marginBottom:4}},'🔐 Security Features:'),
+        React.createElement('div',null,'• Locks after 3 failed attempts'),
+        React.createElement('div',null,'• 30 second cooldown on lockout'),
+        React.createElement('div',null,'• Session persists until logout')
+      )
     )
   );
 }
