@@ -638,7 +638,7 @@ function AssetsView({assets,employees,types,getEmp,sc,setModal,removeAsset,unass
     React.createElement('div',{className:'filter-bar'},
       React.createElement('div',{className:'search-bar'},
         React.createElement('span',{className:'search-icon'},'⌕'),
-        React.createElement('input',{placeholder:'Search...',value:search,onChange:e=>setSearch(e.target.value)})
+        React.createElement('input',{placeholder:'Search...',value:search,onChange:e=>setSearch(e.target.value),autoComplete:'off',name:'asset-search'})
       ),
       React.createElement(SortBtn,{field:'brand',label:'Brand A-Z'}),
       React.createElement(SortBtn,{field:'type',label:'Type A-Z'}),
@@ -690,7 +690,7 @@ function EmployeesView({employees,assets,getEmpAssets,setModal,removeEmployee,ad
     React.createElement('div',{className:'filter-bar'},
       React.createElement('div',{className:'search-bar'},
         React.createElement('span',{className:'search-icon'},'⌕'),
-        React.createElement('input',{placeholder:'Search employees...',value:search,onChange:e=>setSearch(e.target.value)})
+        React.createElement('input',{placeholder:'Search employees...',value:search,onChange:e=>setSearch(e.target.value),autoComplete:'off',name:'emp-search-'+Date.now()})
       )
     ),
     React.createElement('div',{className:'table-wrap'},
