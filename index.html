@@ -735,6 +735,16 @@ function EmployeesView({employees,assets,getEmpAssets,setModal,removeEmployee,ad
             React.createElement('div',{className:'stat-card',style:{padding:'10px 12px'}},React.createElement('div',{className:'stat-label'},'Types'),React.createElement('div',{className:'stat-value',style:{fontSize:20,color:'#7db4fa'}},[...new Set(detailAssets.map(a=>a.type))].length)),
             React.createElement('div',{className:'stat-card',style:{padding:'10px 12px'}},React.createElement('div',{className:'stat-label'},'Dept'),React.createElement('div',{style:{fontSize:12,marginTop:4}},detailEmp.department))
           ),
+          React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}},
+            React.createElement('div',{className:'stat-card',style:{padding:'10px 12px'}},
+              React.createElement('div',{className:'stat-label'},'Joining Date'),
+              React.createElement('div',{style:{fontSize:13,fontWeight:600,color:'#fff',marginTop:4}},detailEmp.joinDate||'—')
+            ),
+            React.createElement('div',{className:'stat-card',style:{padding:'10px 12px'}},
+              React.createElement('div',{className:'stat-label'},'Email'),
+              React.createElement('div',{style:{fontSize:11,color:'var(--muted)',marginTop:4,wordBreak:'break-all'}},detailEmp.email||'—')
+            )
+          ),
           detailAssets.length===0?React.createElement('div',{className:'empty-state',style:{padding:24}},React.createElement('div',{className:'empty-icon'},'📦'),React.createElement('p',null,'No assets assigned')):
           React.createElement('div',{className:'table-wrap'},
             React.createElement('table',null,
