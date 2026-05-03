@@ -143,17 +143,24 @@ const firebaseConfig = {
   messagingSenderId: "276923281427",
   appId: "1:276923281427:web:5befd4beeb850824400fe6"
 };
-firebase.initializeApp(firebaseConfig);
-const db = firebase.firestore();
-const DOC_REF = db.collection('itam').doc('data');
+let DOC_REF = null;
+try {
+  if(typeof firebase !== 'undefined'){
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    DOC_REF = db.collection('itam').doc('data');
+  }
+} catch(e){ console.warn('Firebase unavailable'); }
 
 async function fbSave(assets, employees, history, types) {
+  if(!DOC_REF) return false;
   try {
     await DOC_REF.set({ assets, employees, history, types, savedAt: new Date().toISOString() });
     return true;
   } catch(e) { console.error('FB save failed', e); return false; }
 }
 async function fbLoad() {
+  if(!DOC_REF) return null;
   try {
     const snap = await DOC_REF.get();
     if (snap.exists) return snap.data();
@@ -270,6 +277,10 @@ function Login({onLogin}){
   const [countdown,setCountdown]=useState(0);
 
   useEffect(()=>{
+    // Force clear fields on mount
+    setU('');setP('');
+    // Clear any saved session on fresh load
+    try{localStorage.removeItem('itam_session');}catch(e){}
     // Check if locked out
     try{
       const lockData=JSON.parse(localStorage.getItem('itam_lock')||'{}');
@@ -324,16 +335,18 @@ function Login({onLogin}){
       React.createElement('div',{className:'login-title'},'Welcome back'),
       React.createElement('div',{className:'login-sub'},'Sign in to access the system'),
       err&&React.createElement('div',{className:'login-error'},err),
+      React.createElement('input',{type:'text',style:{display:'none'},name:'fakeusername',autoComplete:'username'}),
+      React.createElement('input',{type:'password',style:{display:'none'},name:'fakepassword',autoComplete:'current-password'}),
       locked&&React.createElement('div',{style:{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:7,padding:'10px 12px',fontSize:12,color:'#f87171',marginBottom:14,textAlign:'center'}},
         '🔒 Account locked. Try again in ',React.createElement('strong',null,countdown),' seconds.'
       ),
       React.createElement('div',{className:'form-group'},
         React.createElement('label',{className:'form-label'},'Username'),
-        React.createElement('input',{className:'form-input',value:u,placeholder:'Enter username',onChange:e=>setU(e.target.value),onKeyDown:e=>e.key==='Enter'&&attempt(),autoFocus:true,disabled:locked})
+        React.createElement('input',{className:'form-input',value:u,placeholder:'Enter username',onChange:e=>setU(e.target.value),onKeyDown:e=>e.key==='Enter'&&attempt(),disabled:locked,autoComplete:'off',name:'itam_u_'+Math.random().toString(36).substr(2,9),id:'itam_u_'+Math.random().toString(36).substr(2,9)})
       ),
       React.createElement('div',{className:'form-group',style:{position:'relative'}},
         React.createElement('label',{className:'form-label'},'Password'),
-        React.createElement('input',{className:'form-input',type:show?'text':'password',value:p,placeholder:'Enter password',onChange:e=>setP(e.target.value),onKeyDown:e=>e.key==='Enter'&&attempt(),style:{paddingRight:50},disabled:locked}),
+        React.createElement('input',{className:'form-input',type:show?'text':'password',value:p,placeholder:'Enter password',onChange:e=>setP(e.target.value),onKeyDown:e=>e.key==='Enter'&&attempt(),style:{paddingRight:50},disabled:locked,autoComplete:'off',name:'itam_p_'+Math.random().toString(36).substr(2,9),id:'itam_p_'+Math.random().toString(36).substr(2,9)}),
         React.createElement('span',{className:'show-hide',onClick:()=>setShow(s=>!s)},show?'Hide':'Show')
       ),
       React.createElement('button',{className:'btn btn-primary',style:{width:'100%',justifyContent:'center',padding:'9px',opacity:locked?.5:1},onClick:attempt,disabled:locked},
@@ -345,9 +358,9 @@ function Login({onLogin}){
 
 // ---- ROOT ----
 function Root(){
-  const [loggedIn,setLoggedIn]=useState(()=>{try{return localStorage.getItem('itam_session')==='1';}catch(e){return false;}});
-  function login(){setLoggedIn(true);try{localStorage.setItem('itam_session','1');}catch(e){}}
-  function logout(){setLoggedIn(false);try{localStorage.removeItem('itam_session');}catch(e){}}
+  const [loggedIn,setLoggedIn]=useState(false);
+  function login(){setLoggedIn(true);}
+  function logout(){setLoggedIn(false);}
   if(!loggedIn)return React.createElement(Login,{onLogin:login});
   return React.createElement(App,{onLogout:logout});
 }
