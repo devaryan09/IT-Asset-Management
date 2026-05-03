@@ -317,12 +317,6 @@ function Login({onLogin}){
       ),
       React.createElement('button',{className:'btn btn-primary',style:{width:'100%',justifyContent:'center',padding:'9px',opacity:locked?.5:1},onClick:attempt,disabled:locked},
         locked?'🔒 Locked ('+countdown+'s)':'Sign In'
-      ),
-      React.createElement('div',{style:{marginTop:16,padding:'10px 12px',background:'rgba(79,142,247,.06)',border:'1px solid rgba(79,142,247,.15)',borderRadius:8,fontSize:11,color:'var(--muted)'}},
-        React.createElement('div',{style:{fontWeight:600,color:'var(--accent)',marginBottom:4}},'🔐 Security Features:'),
-        React.createElement('div',null,'• Locks after 3 failed attempts'),
-        React.createElement('div',null,'• 30 second cooldown on lockout'),
-        React.createElement('div',null,'• Session persists until logout')
       )
     )
   );
@@ -680,6 +674,15 @@ function AssetsView({assets,employees,types,getEmp,sc,setModal,removeAsset,unass
 function EmployeesView({employees,assets,getEmpAssets,setModal,removeEmployee,adminOn,requireAdmin}){
   const [search,setSearch]=useState('');
   const [detail,setDetail]=useState(null);
+  const inputRef=useRef(null);
+
+  useEffect(()=>{
+    // Force clear any browser autofill
+    if(inputRef.current){
+      inputRef.current.value='';
+      setSearch('');
+    }
+  },[]);
   const list=useMemo(()=>{
     const s=search.toLowerCase();
     return employees.filter(e=>!s||e.name.toLowerCase().includes(s)||e.id.toLowerCase().includes(s)||e.department.toLowerCase().includes(s));
@@ -690,7 +693,7 @@ function EmployeesView({employees,assets,getEmpAssets,setModal,removeEmployee,ad
     React.createElement('div',{className:'filter-bar'},
       React.createElement('div',{className:'search-bar'},
         React.createElement('span',{className:'search-icon'},'⌕'),
-        React.createElement('input',{placeholder:'Search employees...',value:search,onChange:e=>setSearch(e.target.value),autoComplete:'off',name:'emp-search-'+Date.now()})
+        React.createElement('input',{ref:inputRef,placeholder:'Search employees...',value:search,onChange:e=>setSearch(e.target.value),autoComplete:'new-password',type:'search',name:'search_'+Math.random()})
       )
     ),
     React.createElement('div',{className:'table-wrap'},
