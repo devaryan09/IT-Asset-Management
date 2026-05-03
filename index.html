@@ -109,6 +109,14 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .login-sub{font-size:12px;color:var(--muted);margin-bottom:24px}
 .login-error{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:7px;padding:9px 12px;font-size:12px;color:#f87171;margin-bottom:14px}
 .show-hide{position:absolute;right:10px;top:32px;cursor:pointer;color:var(--muted);font-size:12px;user-select:none}
+.confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:300}
+.confirm-box{background:#1e2130;border:1px solid #2e3348;border-radius:16px;padding:32px 28px;max-width:340px;width:90%;text-align:center;animation:slideIn .2s ease}
+.confirm-box p{font-size:16px;font-weight:500;color:#e2e8f0;margin-bottom:24px;line-height:1.5}
+.confirm-btns{display:flex;gap:12px;justify-content:center}
+.btn-yes{background:#ef4444;color:#fff;border:none;padding:11px 30px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;transition:all .15s}
+.btn-yes:hover{background:#dc2626;transform:scale(1.03)}
+.btn-no{background:#22c55e;color:#fff;border:none;padding:11px 30px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;transition:all .15s}
+.btn-no:hover{background:#16a34a;transform:scale(1.03)}
 </style>
 </head>
 <body>
@@ -236,6 +244,19 @@ const INIT_HISTORY=[
   {id:'H4',assetId:'AST-007',action:'Assigned',employeeId:'EMP-002',note:'Remote work setup',date:'05 Dec 2023',by:'IT Admin'},
 ];
 
+// ---- CONFIRM MODAL ----
+function ConfirmModal({message,onYes,onNo}){
+  return React.createElement('div',{className:'confirm-overlay'},
+    React.createElement('div',{className:'confirm-box'},
+      React.createElement('p',null,message),
+      React.createElement('div',{className:'confirm-btns'},
+        React.createElement('button',{className:'btn-yes',onClick:onYes},'Yes, delete it'),
+        React.createElement('button',{className:'btn-no',onClick:onNo},'No, keep it')
+      )
+    )
+  );
+}
+
 // ---- LOGIN ----
 const LOGIN_USER='labelupitam';
 const LOGIN_PASS='oneteamify@123';
@@ -346,6 +367,9 @@ function App({onLogout}){
   const [pinVal,setPinVal]=useState('');
   const [pinErr,setPinErr]=useState('');
   const [saved,setSaved]=useState(!!db);
+  const [confirm,setConfirm]=useState(null); // {message, onYes}
+  function askConfirm(message,onYes){setConfirm({message,onYes});}
+  function closeConfirm(){setConfirm(null);}
   const [syncStatus,setSyncStatus]=useState('idle'); // idle | syncing | synced | error
   const [fbReady,setFbReady]=useState(false);
 
@@ -407,7 +431,9 @@ function App({onLogout}){
   }
   function removeAsset(id){
     if(assets.find(x=>x.id===id).status==='Assigned'){notify('Unassign first','error');return;}
-    setA(a=>a.filter(x=>x.id!==id));notify('Asset removed');
+    askConfirm('Do you really want to delete this asset?',()=>{
+      setA(a=>a.filter(x=>x.id!==id));notify('Asset removed');closeConfirm();
+    });
   }
   function saveEmployee(data,editId){
     if(editId){setE(e=>e.map(x=>x.id===editId?{...x,...data}:x));notify('Employee updated');}
@@ -419,7 +445,9 @@ function App({onLogout}){
   }
   function removeEmployee(id){
     if(assets.some(a=>a.assignedTo===id)){notify('Unassign all assets first','error');return;}
-    setE(e=>e.filter(x=>x.id!==id));notify('Employee removed');
+    askConfirm('Do you really want to delete this employee?',()=>{
+      setE(e=>e.filter(x=>x.id!==id));notify('Employee removed');closeConfirm();
+    });
   }
   function assignAsset(assetId,empId,note){
     setA(a=>a.map(x=>x.id===assetId?{...x,status:'Assigned',assignedTo:empId}:x));
@@ -536,6 +564,7 @@ function App({onLogout}){
     // ASSET/EMPLOYEE/ASSIGN MODALS
     modal&&React.createElement(ModalView,{modal,setModal,saveAsset,saveEmployee,assignAsset,assets,employees,types,getEmp,getAsset}),
     // NOTIFICATION
+    confirm&&React.createElement(ConfirmModal,{message:confirm.message,onYes:confirm.onYes,onNo:closeConfirm}),
     notif&&React.createElement('div',{className:'notification '+notif.type},
       React.createElement('span',null,notif.type==='success'?'✓':'✕'),
       notif.msg
