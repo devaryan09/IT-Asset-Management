@@ -417,7 +417,10 @@ function App({onLogout}){
   }
   function saveEmployee(data,editId){
     if(editId){setE(e=>e.map(x=>x.id===editId?{...x,...data}:x));notify('Employee updated');}
-    else{setE(e=>[{...data,id:data.id||genId('EMP'),joinDate:today()},...e]);notify('Employee added');}
+    else{
+      const joinDate=data.joinDate?new Date(data.joinDate).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):today();
+      setE(e=>[{...data,id:data.id||genId('EMP'),joinDate},...e]);notify('Employee added');
+    }
     setModal(null);
   }
   function removeEmployee(id){
@@ -942,6 +945,10 @@ function ModalView({modal,setModal,saveAsset,saveEmployee,assignAsset,assets,emp
           React.createElement('div',{className:'form-group'},
             React.createElement('label',{className:'form-label'},'Email'),
             React.createElement('input',{className:'form-input',type:'email',value:form.email||'',placeholder:'email@company.com',onChange:e=>set('email',e.target.value)})
+          ),
+          React.createElement('div',{className:'form-group'},
+            React.createElement('label',{className:'form-label'},'Joining Date'),
+            React.createElement('input',{className:'form-input',type:'date',value:form.joinDate||'',onChange:e=>set('joinDate',e.target.value)})
           )
         ),
         React.createElement('div',{className:'modal-footer'},
