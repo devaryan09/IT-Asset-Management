@@ -126,6 +126,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <script>
 const {useState,useEffect,useMemo,useRef}=React;
 
@@ -133,6 +135,116 @@ const {useState,useEffect,useMemo,useRef}=React;
 const DEFAULT_TYPES=['Laptop','Monitor','Mouse','Keyboard','Headset','Webcam','Docking Station','Printer','Other'];
 const DEPARTMENTS=['Engineering','Finance','HR','Marketing','Operations','Sales','IT','Design','Kovark'];
 const DB_KEY='itam_v3';
+// ---- EMAIL OTP ----
+// EmailJS config — replace these with your EmailJS credentials
+const EMAILJS_SERVICE_ID  = 'service_731kmuf';      // your EmailJS service ID
+const EMAILJS_TEMPLATE_ID = 'template_b2kz53h'; // your EmailJS template ID
+const EMAILJS_PUBLIC_KEY  = 'ZevwnJjx5HzApGC1I';   // your EmailJS public key
+const RECOVERY_EMAIL      = 'devsngc@gmail.com';
+
+let _otpStore = null; // {code, expiry}
+
+function generateOTP(){
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function sendOTPEmail(){
+  const code = generateOTP();
+  _otpStore = {code, expiry: Date.now() + 10 * 60 * 1000}; // 10 min expiry
+  try{
+    await emailjs.init(EMAILJS_PUBLIC_KEY);
+    await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+      to_email: RECOVERY_EMAIL,
+      email: RECOVERY_EMAIL,
+      passcode: code,
+      app_name: 'LabelUP ITAM',
+    });
+    return {ok:true};
+  }catch(e){
+    console.error('EmailJS error:', e);
+    return {ok:false, err: e.text||e.message||'Failed to send email.'};
+  }
+}
+
+function verifyOTP(input){
+  if(!_otpStore) return 'expired';
+  if(Date.now() > _otpStore.expiry){_otpStore=null;return 'expired';}
+  if(String(input).trim() === _otpStore.code){_otpStore=null;return 'ok';}
+  return 'invalid';
+}
+
+
+
+// ---- AUTH STORAGE ----
+const AUTH_KEY='itam_auth_v1';
+function loadAuth(){
+  try{
+    const r=localStorage.getItem(AUTH_KEY);
+    if(r) return JSON.parse(r);
+  }catch(e){}
+  return {loginPass:LOGIN_PASS, adminPass:ADMIN_PASS, totp2fa:null, adminTotp:null};
+}
+function saveAuth(a){
+  try{localStorage.setItem(AUTH_KEY,JSON.stringify(a));return true;}catch(e){return false;}
+}
+
+// ---- TOTP ENGINE (RFC 6238 / SHA-1 HMAC, no external lib) ----
+async function hmacSHA1(keyBytes, msgBytes){
+  const key = await crypto.subtle.importKey('raw', keyBytes, {name:'HMAC',hash:'SHA-1'}, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, msgBytes);
+  return new Uint8Array(sig);
+}
+function base32Decode(s){
+  const alpha='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  s = s.replace(/=+$/,'').toUpperCase().replace(/[^A-Z2-7]/g,'');
+  let bits=0, val=0, out=[];
+  for(let i=0;i<s.length;i++){
+    val=(val<<5)|alpha.indexOf(s[i]);
+    bits+=5;
+    if(bits>=8){out.push((val>>(bits-8))&255);bits-=8;}
+  }
+  return new Uint8Array(out);
+}
+function base32Encode(bytes){
+  const alpha='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits=0,val=0,out='';
+  for(let i=0;i<bytes.length;i++){val=(val<<8)|bytes[i];bits+=8;while(bits>=5){out+=alpha[(val>>(bits-5))&31];bits-=5;}}
+  if(bits>0)out+=alpha[(val<<(5-bits))&31];
+  while(out.length%8!==0)out+='=';
+  return out;
+}
+async function totpCode(secret, offset=0){
+  try{
+    const T = Math.floor((Date.now()/1000 + offset*30)/30);
+    const msg = new Uint8Array(8);
+    let t = T;
+    for(let i=7;i>=0;i--){msg[i]=t&0xff;t=t>>>8;}
+    const keyBytes = base32Decode(secret);
+    const hash = await hmacSHA1(keyBytes, msg);
+    const offset2 = hash[hash.length-1]&0xf;
+    const code = ((hash[offset2]&0x7f)<<24)|((hash[offset2+1]&0xff)<<16)|((hash[offset2+2]&0xff)<<8)|(hash[offset2+3]&0xff);
+    return String(code%1000000).padStart(6,'0');
+  }catch(e){return null;}
+}
+async function verifyTotp(secret, input){
+  if(!secret||!input)return false;
+  for(let o=-1;o<=1;o++){
+    const c=await totpCode(secret,o);
+    if(c===String(input).trim())return true;
+  }
+  return false;
+}
+function genTotpSecret(){
+  const bytes=new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  return base32Encode(bytes).replace(/=/g,'');
+}
+function totpQRUrl(secret, label='ITAM', issuer='LabelUP'){
+  const uri = encodeURIComponent('otpauth://totp/'+encodeURIComponent(issuer+':'+label)+'?secret='+secret+'&issuer='+encodeURIComponent(issuer)+'&digits=6&period=30');
+  return 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data='+uri;
+}
+
+
 const ADMIN_PASS='navraj@123';
 
 // ---- FIREBASE ----
@@ -254,9 +366,9 @@ function initials(n){return (n||'?').split(' ').map(w=>w[0]).join('').substring(
 function loadDB(){
   try{
     const r=localStorage.getItem(DB_KEY);
-    if(r){const d=JSON.parse(r);if(d&&d.assets&&d.employees&&d.assets.length>=100)return d;}
+    if(r){const d=JSON.parse(r);if(d&&Array.isArray(d.assets)&&Array.isArray(d.employees))return d;}
     const b=localStorage.getItem(DB_KEY+'_bak');
-    if(b){const d=JSON.parse(b);if(d&&d.assets&&d.assets.length>=100)return d;}
+    if(b){const d=JSON.parse(b);if(d&&Array.isArray(d.assets)&&Array.isArray(d.employees))return d;}
   }catch(e){}
   return null;
 }
@@ -369,11 +481,170 @@ function exportExcel(assets,employees,history){
   XLSX.writeFile(wb, fname, {bookType:'xlsx', type:'binary', cellStyles:true});
 }
 function importJSON(file,onOk,onErr){
+  if(!file){onErr('No file selected.');return;}
   const r=new FileReader();
-  r.onload=e=>{try{const d=JSON.parse(e.target.result);if(!d.assets||!d.employees)throw new Error('bad');onOk(d);}catch(ex){onErr('Invalid backup file.');}};
+  r.onerror=()=>onErr('Failed to read file. Please try again.');
+  r.onload=e=>{
+    try{
+      const d=JSON.parse(e.target.result);
+      if(!d||typeof d!=='object'){throw new Error('not an object');}
+      if(!Array.isArray(d.assets)){throw new Error('missing assets array');}
+      if(!Array.isArray(d.employees)){throw new Error('missing employees array');}
+      onOk(d);
+    }catch(ex){
+      onErr('Invalid backup file: '+ex.message+'. Please use a valid ITAM JSON backup.');
+    }
+  };
   r.readAsText(file);
 }
 
+
+function importExcel(file, employees, onOk, onErr) {
+  if (!file) { onErr('No file selected.'); return; }
+  const r = new FileReader();
+  r.onerror = () => onErr('Failed to read file. Please try again.');
+  r.onload = e => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: 'array' });
+      const assets = [];
+      const idSet = new Set();
+      function getRows(sheetName) {
+        const ws = wb.Sheets[sheetName];
+        if (!ws) return [];
+        return XLSX.utils.sheet_to_json(ws, { defval: '' });
+      }
+      function findEmpId(empId, empName) {
+        if (empId) {
+          const byId = employees.find(e => e.id === String(empId).trim());
+          if (byId) return byId.id;
+        }
+        if (empName) {
+          const byName = employees.find(e => e.name.toLowerCase() === String(empName).trim().toLowerCase());
+          if (byName) return byName.id;
+        }
+        return null;
+      }
+      function makeId(prefix, suffix) {
+        let base = String(prefix || 'UNK').trim() + '-' + suffix;
+        let id = base, n = 2;
+        while (idSet.has(id)) id = base + n++;
+        idSet.add(id); return id;
+      }
+      // LAPTOP sheet
+      getRows('LAPTOP').forEach(row => {
+        const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+        const serial = String(row['SERIAL NUM (SN#)'] || row['SERIAL'] || '').trim();
+        if (!serial && !row['ITEM NAME']) return;
+        assets.push({
+          id: makeId(row['EMPLOYEE-ID'] || empId || 'LAP', 'LAP'),
+          type: 'Laptop', brand: String(row['ITEM NAME'] || '').trim(), model: '', serial,
+          status: empId ? 'Assigned' : 'Available',
+          condition: String(row['CONDITION'] || 'New').trim(), assignedTo: empId || null,
+          assignDate: String(row['DATE ISSUED'] || '').trim(), purchaseDate: String(row['DATE ISSUED'] || '').trim(),
+          ram: String(row['RAM'] || '').trim(), rom: String(row['ROM'] || '').trim(),
+          description: String(row['DESCRIPTION'] || '').trim(), comments: String(row['COMMENTS'] || '').trim(),
+        });
+      });
+      // MONITOR sheet
+      getRows('MONITOR').forEach(row => {
+        const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+        if (!row['ITEM NAME']) return;
+        assets.push({
+          id: makeId(row['EMPLOYEE-ID'] || empId || 'MON', 'MON'),
+          type: 'Monitor', brand: String(row['ITEM NAME'] || '').trim(), model: '',
+          serial: String(row['SERIAL'] || row['SERIAL NUMBER'] || '').trim(),
+          status: empId ? 'Assigned' : 'Available',
+          condition: String(row['CONDITION'] || 'New').trim(), assignedTo: empId || null,
+          assignDate: String(row['DATE ISSUED'] || '').trim(), purchaseDate: String(row['DATE ISSUED'] || '').trim(),
+          ram: '', rom: '', description: String(row['COMMENTS'] || '').trim(), comments: String(row['COMMENTS'] || '').trim(),
+        });
+      });
+      // KEYBOARD-MOUSE sheet
+      getRows('KEYBOARD- MOUSE').forEach(row => {
+        const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+        const brand = String(row['ACCESSORY BRAND/MODEL'] || '').trim();
+        const kbQty = String(row['KEYBOARD'] || '').trim();
+        const msQty = String(row['MOUSE'] || '').trim();
+        if (kbQty && kbQty !== '0') {
+          assets.push({
+            id: makeId(row['EMPLOYEE-ID'] || empId || 'KB', 'KB'),
+            type: 'Keyboard', brand, model: '', serial: String(row['SERIAL NUMBER (KEYBOARD)'] || '').trim(),
+            status: empId ? 'Assigned' : 'Available', condition: String(row['CONDITION'] || 'New').trim(),
+            assignedTo: empId || null, assignDate: '', purchaseDate: '', ram: '', rom: '',
+            description: '', comments: String(row['COMMENT'] || '').trim(),
+          });
+        }
+        if (msQty && msQty !== '0') {
+          assets.push({
+            id: makeId(row['EMPLOYEE-ID'] || empId || 'MS', 'MS'),
+            type: 'Mouse', brand, model: '', serial: String(row['SERIAL NUMBER (MOUSE)'] || '').trim(),
+            status: empId ? 'Assigned' : 'Available', condition: String(row['CONDITION'] || 'New').trim(),
+            assignedTo: empId || null, assignDate: '', purchaseDate: '', ram: '', rom: '',
+            description: '', comments: String(row['COMMENT'] || '').trim(),
+          });
+        }
+      });
+      // HEADPHONES sheet
+      const hpSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('HEAD')) || '';
+      if (hpSheetName) {
+        getRows(hpSheetName).forEach(row => {
+          const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+          const brand = String(row['HEADPHONE BRAND/MODEL'] || '').trim();
+          if (!brand) return;
+          assets.push({
+            id: makeId(row['EMPLOYEE-ID'] || empId || 'HP', 'HP'),
+            type: 'Headset', brand, model: '', serial: '',
+            status: empId ? 'Assigned' : 'Available', condition: 'New',
+            assignedTo: empId || null, assignDate: '', purchaseDate: '', ram: '', rom: '',
+            description: '', comments: String(row['COMMENTS'] || '').trim(),
+          });
+        });
+      }
+      // LAPTOP STAND sheet
+      const standSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('STAND')) || '';
+      if (standSheetName) {
+        getRows(standSheetName).forEach(row => {
+          const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+          const brand = String(row['STAND BRAND/MODEL'] || '').trim();
+          if (!brand) return;
+          assets.push({
+            id: makeId(row['EMPLOYEE-ID'] || empId || 'ST', 'ST'),
+            type: 'Laptop Stand', brand, model: '', serial: '',
+            status: empId ? 'Assigned' : 'Available', condition: 'New',
+            assignedTo: empId || null, assignDate: '', purchaseDate: '', ram: '', rom: '',
+            description: '', comments: String(row['COMMENTS'] || '').trim(),
+          });
+        });
+      }
+      // OTHER-ACCS sheet
+      const otherSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('OTHER')) || '';
+      if (otherSheetName) {
+        getRows(otherSheetName).forEach(row => {
+          const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+          const brand = String(row['ITEM NAME'] || '').trim();
+          const type = String(row['ITEM TYPE'] || 'Other').trim();
+          if (!brand && !type) return;
+          assets.push({
+            id: makeId(row['EMPLOYEE-ID'] || empId || 'OT', 'OT'),
+            type, brand, model: '', serial: String(row['SERIAL'] || '').trim(),
+            status: empId ? 'Assigned' : 'Available', condition: String(row['CONDITION'] || 'New').trim(),
+            assignedTo: empId || null, assignDate: String(row['DATE ISSUED'] || '').trim(),
+            purchaseDate: String(row['DATE ISSUED'] || '').trim(), ram: '', rom: '',
+            description: String(row['COMMENTS'] || '').trim(), comments: String(row['COMMENTS'] || '').trim(),
+          });
+        });
+      }
+      if (assets.length === 0) {
+        onErr('No asset rows found. Make sure sheet names match: LAPTOP, MONITOR, KEYBOARD- MOUSE, etc.');
+        return;
+      }
+      onOk({ assets, importedCount: assets.length });
+    } catch (ex) {
+      onErr('Failed to parse Excel file: ' + ex.message);
+    }
+  };
+  r.readAsArrayBuffer(file);
+}
 
 // ---- SAMPLE DATA ----
 const INIT_EMPLOYEES=[
@@ -659,7 +930,7 @@ function ConfirmModal({message,onYes,onNo}){
 
 // ---- LOGIN ----
 const LOGIN_USER='labelupitam';
-const LOGIN_PASS='oneteamify@12345';
+const LOGIN_PASS='oneteamify@123';
 function Login({onLogin}){
   const [u,setU]=useState('');
   const [p,setP]=useState('');
@@ -668,6 +939,16 @@ function Login({onLogin}){
   const [attempts,setAttempts]=useState(0);
   const [locked,setLocked]=useState(false);
   const [countdown,setCountdown]=useState(0);
+  const [pending2fa,setPending2fa]=useState(false);
+  const [otpVal,setOtpVal]=useState('');
+  const [otpErr,setOtpErr]=useState('');
+  const [forgotMode,setForgotMode]=useState(false);
+  const [forgotStep,setForgotStep]=useState(1);
+  const [forgotOtp,setForgotOtp]=useState('');
+  const [forgotNew,setForgotNew]=useState('');
+  const [forgotNew2,setForgotNew2]=useState('');
+  const [forgotMsg,setForgotMsg]=useState('');
+  const [forgotSecret,setForgotSecret]=useState(null);
 
   useEffect(()=>{
     // Force clear fields on mount
@@ -695,9 +976,10 @@ function Login({onLogin}){
 
   function attempt(){
     if(locked)return;
-    if(u.trim()===LOGIN_USER&&p===LOGIN_PASS){
+    const authCfg=loadAuth();if(u.trim()===LOGIN_USER&&p===authCfg.loginPass){
       setAttempts(0);localStorage.removeItem('itam_lock');
-      onLogin('admin');
+      if(authCfg.totp2fa){setPending2fa(true);setP('');}
+      else onLogin('admin');
     }else{
       const newAttempts=attempts+1;
       setAttempts(newAttempts);
@@ -713,6 +995,97 @@ function Login({onLogin}){
     }
   }
 
+  async function verify2fa(){
+    const ac=loadAuth();
+    const ok=await verifyTotp(ac.totp2fa, otpVal);
+    if(ok){setOtpErr('');onLogin('admin');}
+    else{setOtpErr('Invalid code. Try again.');}
+  }
+
+  if(pending2fa) return React.createElement('div',{className:'login-screen'},
+    React.createElement('div',{className:'login-card'},
+      React.createElement('div',{className:'login-logo'},
+        React.createElement('div',{className:'login-logo-icon'},'🔐'),
+        React.createElement('div',null,
+          React.createElement('div',{className:'login-company'},'Label UP'),
+          React.createElement('div',{style:{fontSize:14,fontWeight:700,color:'#fff'}},'Two-Factor Auth')
+        )
+      ),
+      React.createElement('div',{style:{fontSize:12,color:'var(--muted)',marginBottom:16}},'Enter the 6-digit code from your authenticator app.'),
+      otpErr&&React.createElement('div',{className:'login-error'},otpErr),
+      React.createElement('input',{className:'form-input',type:'text',inputMode:'numeric',maxLength:6,autoFocus:true,placeholder:'000000',value:otpVal,onChange:e=>setOtpVal(e.target.value.replace(/\D/g,'')),onKeyDown:e=>e.key==='Enter'&&verify2fa(),style:{letterSpacing:8,fontSize:20,textAlign:'center',marginBottom:12}}),
+      React.createElement('button',{className:'btn btn-primary',style:{width:'100%'},onClick:verify2fa},'Verify'),
+      React.createElement('button',{className:'btn btn-secondary',style:{width:'100%',marginTop:8},onClick:()=>{setPending2fa(false);setOtpVal('');setOtpErr('');}  },'← Back')
+    )
+  );
+
+  const [forgotSending,setForgotSending]=useState(false);
+  async function startForgot(){
+    setForgotMode(true);setForgotStep(1);setForgotMsg('');
+    setForgotOtp('');setForgotNew('');setForgotNew2('');
+    setForgotSending(true);
+    const res=await sendOTPEmail();
+    setForgotSending(false);
+    if(res.ok){setForgotMsg('ok:OTP sent to '+RECOVERY_EMAIL+'. Check your inbox.');}
+    else{setForgotMsg('error:Failed to send OTP: '+res.err);}
+  }
+  function doForgotVerify(){
+    const result=verifyOTP(forgotOtp);
+    if(result==='ok'){setForgotStep(2);setForgotMsg('');}
+    else if(result==='expired'){setForgotMsg('error:OTP expired. Go back and try again.');}
+    else{setForgotMsg('error:Incorrect OTP. Try again.');}
+  }
+  function doForgotReset(){
+    if(forgotNew.length<6){setForgotMsg('error:Password must be at least 6 characters.');return;}
+    if(forgotNew!==forgotNew2){setForgotMsg('error:Passwords do not match.');return;}
+    const ac=loadAuth();ac.loginPass=forgotNew;saveAuth(ac);
+    setForgotMsg('ok:Password changed! You can now sign in.');
+    setForgotStep(3);
+  }
+  if(forgotMode) return React.createElement('div',{className:'login-screen'},
+    React.createElement('div',{className:'login-card'},
+      React.createElement('div',{className:'login-logo'},
+        React.createElement('div',{className:'login-logo-icon'},'🔑'),
+        React.createElement('div',null,
+          React.createElement('div',{className:'login-company'},'Label UP'),
+          React.createElement('div',{style:{fontSize:14,fontWeight:700,color:'#fff'}},'Reset Password')
+        )
+      ),
+      forgotMsg&&React.createElement('div',{style:forgotMsg.startsWith('ok:')?{background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#34d399',marginBottom:12}:{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#f87171',marginBottom:12}},forgotMsg.replace(/^(ok|error):/,'')),
+      forgotStep===1&&React.createElement(React.Fragment,null,
+        forgotSending
+          ? React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:14,textAlign:'center'}},'Sending OTP to '+RECOVERY_EMAIL+'...')
+          : React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:14}},'A 6-digit OTP has been sent to ',React.createElement('b',{style:{color:'var(--accent)'}},RECOVERY_EMAIL),'. Enter it below.'),
+        React.createElement('input',{className:'form-input',type:'text',inputMode:'numeric',maxLength:6,autoFocus:true,placeholder:'000000',value:forgotOtp,onChange:e=>setForgotOtp(e.target.value.replace(/\D/g,'')),onKeyDown:e=>e.key==='Enter'&&doForgotVerify(),style:{letterSpacing:8,fontSize:22,textAlign:'center',marginBottom:12},disabled:forgotSending}),
+        React.createElement('button',{className:'btn btn-primary',style:{width:'100%',marginBottom:8},onClick:doForgotVerify,disabled:forgotSending},'Verify OTP'),
+        React.createElement('button',{className:'btn btn-secondary',style:{width:'100%',fontSize:11},onClick:startForgot,disabled:forgotSending},'Resend OTP')
+      ),
+      forgotStep===2&&React.createElement(React.Fragment,null,
+        React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:14}},'OTP verified. Set your new password.'),
+        React.createElement('input',{className:'form-input',type:'password',autoFocus:true,placeholder:'New password (min 6 chars)',value:forgotNew,onChange:e=>setForgotNew(e.target.value),style:{marginBottom:8}}),
+        React.createElement('input',{className:'form-input',type:'password',placeholder:'Confirm new password',value:forgotNew2,onChange:e=>setForgotNew2(e.target.value),onKeyDown:e=>e.key==='Enter'&&doForgotReset(),style:{marginBottom:12}}),
+        React.createElement('button',{className:'btn btn-primary',style:{width:'100%',marginBottom:8},onClick:doForgotReset},'Set New Password')
+      ),
+      forgotStep===3&&React.createElement('p',{style:{fontSize:12,color:'#34d399',marginBottom:14,textAlign:'center'}},'Password changed successfully!'),
+      React.createElement('button',{className:'btn btn-secondary',style:{width:'100%'},onClick:()=>setForgotMode(false)},'← Back to Sign In')
+    )
+  );
+  if(pending2fa) return React.createElement('div',{className:'login-screen'},
+    React.createElement('div',{className:'login-card'},
+      React.createElement('div',{className:'login-logo'},
+        React.createElement('div',{className:'login-logo-icon'},'🔐'),
+        React.createElement('div',null,
+          React.createElement('div',{className:'login-company'},'Label UP'),
+          React.createElement('div',{style:{fontSize:14,fontWeight:700,color:'#fff'}},'Two-Factor Auth')
+        )
+      ),
+      React.createElement('div',{style:{fontSize:12,color:'var(--muted)',marginBottom:16}},'Enter the 6-digit code from your authenticator app.'),
+      otpErr&&React.createElement('div',{className:'login-error'},otpErr),
+      React.createElement('input',{className:'form-input',type:'text',inputMode:'numeric',maxLength:6,autoFocus:true,placeholder:'000000',value:otpVal,onChange:e=>setOtpVal(e.target.value.replace(/\D/g,'')),onKeyDown:e=>e.key==='Enter'&&verify2fa(),style:{letterSpacing:8,fontSize:20,textAlign:'center',marginBottom:12}}),
+      React.createElement('button',{className:'btn btn-primary',style:{width:'100%'},onClick:verify2fa},'Verify'),
+      React.createElement('button',{className:'btn btn-secondary',style:{width:'100%',marginTop:8},onClick:()=>{setPending2fa(false);setOtpVal('');setOtpErr('');}},'← Back')
+    )
+  );
   return React.createElement('div',{className:'login-screen'},
     React.createElement('div',{className:'login-card'},
       React.createElement('div',{className:'login-logo'},
@@ -742,6 +1115,9 @@ function Login({onLogin}){
       ),
       React.createElement('button',{className:'btn btn-primary',style:{width:'100%',justifyContent:'center',padding:'9px',opacity:locked?.5:1},onClick:attempt,disabled:locked},
         locked?'🔒 Locked ('+countdown+'s)':'Sign In'
+      ),
+      React.createElement('div',{style:{textAlign:'center',marginTop:12}},
+        React.createElement('span',{onClick:startForgot,style:{fontSize:11,color:'var(--accent)',cursor:'pointer',textDecoration:'underline'}},'Forgot password?')
       )
     )
   );
@@ -757,7 +1133,7 @@ function Root(){
     setLoggedIn(true);
   }
   function logout(){
-    try{sessionStorage.removeItem('itam_session');}catch(e){}
+    try{sessionStorage.removeItem('itam_session');sessionStorage.removeItem('itam_admin');}catch(e){}
     setLoggedIn(false);
   }
   if(!loggedIn)return React.createElement(Login,{onLogin:login});
@@ -774,10 +1150,26 @@ function App({onLogout}){
   const [view,setView]=useState('dashboard');
   const [modal,setModal]=useState(null);
   const [notif,setNotif]=useState(null);
-  const [adminOn,setAdminOn]=useState(false);
+  const [adminOn,setAdminOn]=useState(()=>{try{return sessionStorage.getItem('itam_admin')==='1';}catch(e){return false;}});
   const [pinModal,setPinModal]=useState(false);
   const [pinVal,setPinVal]=useState('');
   const [pinErr,setPinErr]=useState('');
+  const [settingsModal,setSettingsModal]=useState(false);
+  const [settingsTab,setSettingsTab]=useState('login');
+  const [chgOld,setChgOld]=useState('');
+  const [chgNew,setChgNew]=useState('');
+  const [chgNew2,setChgNew2]=useState('');
+  const [chgMsg,setChgMsg]=useState('');
+  const [totpSetup,setTotpSetup]=useState(null);
+  const [totpVerify,setTotpVerify]=useState('');
+  const [totpMsg,setTotpMsg]=useState('');
+  const [adminChgOld,setAdminChgOld]=useState('');
+  const [adminChgNew,setAdminChgNew]=useState('');
+  const [adminChgNew2,setAdminChgNew2]=useState('');
+  const [adminChgMsg,setAdminChgMsg]=useState('');
+  const [adminTotpSetup,setAdminTotpSetup]=useState(null);
+  const [adminTotpVerify,setAdminTotpVerify]=useState('');
+  const [adminTotpMsg,setAdminTotpMsg]=useState('');
   const [saved,setSaved]=useState(!!db);
   const [confirm,setConfirm]=useState(null); // {message, onYes}
   function askConfirm(message,onYes){setConfirm({message,onYes});}
@@ -807,57 +1199,129 @@ function App({onLogout}){
     return ()=>clearInterval(t);
   },[]);
 
-  // Load from Firebase on first mount
+  // Sync with Firebase — localStorage is ALWAYS source of truth
   useEffect(()=>{
     setSyncStatus('syncing');
-    fbLoad().then(data=>{
-      // If cloud data exists AND has full dataset (200+ assets), use it
-      // Otherwise seed Firebase with the complete INIT data
-      const cloudIsComplete = data && data.assets && data.assets.length >= 100;
-      if(cloudIsComplete){
-        setAssets(data.assets);
-        setEmployees(data.employees||INIT_EMPLOYEES);
-        setHistory(data.history||INIT_HISTORY);
-        setTypes(data.types||DEFAULT_TYPES);
-        saveDB(data.assets,data.employees,data.history,data.types||DEFAULT_TYPES);
-        setSaved(true);setSyncStatus('synced');
-        notify('Data loaded from cloud (' + data.assets.length + ' assets)');
-      } else {
-        // No cloud data or stale — push complete INIT data to Firebase
-        fbSave(INIT_ASSETS,INIT_EMPLOYEES,INIT_HISTORY,DEFAULT_TYPES).then(ok=>{
-          setSyncStatus(ok?'synced':'error');
-          if(ok) notify('Full dataset synced to cloud (' + INIT_ASSETS.length + ' assets)');
-        });
-      }
+    const local=loadDB();
+    const localHasData=local&&Array.isArray(local.assets)&&Array.isArray(local.employees);
+    if(localHasData){
+      // Local data exists — push to Firebase, never overwrite local
+      fbSave(local.assets,local.employees,local.history||[],local.types||DEFAULT_TYPES)
+        .then(ok=>setSyncStatus(ok?'synced':'error'))
+        .catch(()=>setSyncStatus('error'));
       setFbReady(true);
-    }).catch(()=>{setSyncStatus('error');setFbReady(true);});
+    } else {
+      // No local data — try restore from Firebase
+      fbLoad().then(data=>{
+        const cloudHasData=data&&Array.isArray(data.assets)&&Array.isArray(data.employees);
+        if(cloudHasData){
+          setAssets(data.assets);setEmployees(data.employees||[]);
+          setHistory(data.history||[]);setTypes(data.types||DEFAULT_TYPES);
+          saveDB(data.assets,data.employees||[],data.history||[],data.types||DEFAULT_TYPES);
+          setSaved(true);
+        }
+        setSyncStatus('synced');setFbReady(true);
+      }).catch(()=>{setSyncStatus('error');setFbReady(true);});
+    }
   },[]);
   const timer=useRef(null);
   const ref=useRef({assets,employees,history,types});
 
   useEffect(()=>{ref.current={assets,employees,history,types};},[assets,employees,history,types]);
+  useEffect(()=>{
+    const flush=()=>{const {assets:a,employees:e,history:h,types:t}=ref.current;saveDB(a,e,h,t);};
+    window.addEventListener('beforeunload',flush);
+    return ()=>window.removeEventListener('beforeunload',flush);
+  },[]);
+  useEffect(()=>{
+    const flush=()=>{const {assets:a,employees:e,history:h,types:t}=ref.current;saveDB(a,e,h,t);};
+    window.addEventListener('beforeunload',flush);
+    return ()=>window.removeEventListener('beforeunload',flush);
+  },[]);
   useEffect(()=>{if(notif){const t=setTimeout(()=>setNotif(null),3000);return()=>clearTimeout(t);}},[notif]);
 
   function notify(msg,type){setNotif({msg,type:type||'success'});}
 
   function triggerSave(a,e,h,t){
+    saveDB(a,e,h,t);setSaved(true); // immediate localStorage save
     if(timer.current)clearTimeout(timer.current);
     timer.current=setTimeout(()=>{
-      saveDB(a,e,h,t);setSaved(true);
-      // Also save to Firebase
       fbSave(a,e,h,t).then(ok=>{
         if(ok)setSyncStatus('synced');
         else setSyncStatus('error');
       });
-    },500);
+    },1500);
   }
   function setA(fn){setAssets(prev=>{const n=typeof fn==='function'?fn(prev):fn;triggerSave(n,ref.current.employees,ref.current.history,ref.current.types);return n;});}
   function setE(fn){setEmployees(prev=>{const n=typeof fn==='function'?fn(prev):fn;triggerSave(ref.current.assets,n,ref.current.history,ref.current.types);return n;});}
   function setH(fn){setHistory(prev=>{const n=typeof fn==='function'?fn(prev):fn;triggerSave(ref.current.assets,ref.current.employees,n,ref.current.types);return n;});}
   function setT(fn){setTypes(prev=>{const n=typeof fn==='function'?fn(prev):fn;triggerSave(ref.current.assets,ref.current.employees,ref.current.history,n);return n;});}
 
+
+  // ---- SETTINGS / PASSWORD / 2FA FUNCTIONS ----
+  async function changeLoginPass(){
+    const ac=loadAuth();
+    if(chgOld!==ac.loginPass){setChgMsg('error:Current password is incorrect.');return;}
+    if(chgNew.length<6){setChgMsg('error:New password must be at least 6 characters.');return;}
+    if(chgNew!==chgNew2){setChgMsg('error:New passwords do not match.');return;}
+    ac.loginPass=chgNew;saveAuth(ac);
+    setChgMsg('ok:Login password changed successfully!');
+    setChgOld('');setChgNew('');setChgNew2('');
+  }
+  function startTotpSetup(){
+    const secret=genTotpSecret();
+    setTotpSetup(secret);setTotpVerify('');setTotpMsg('');
+  }
+  async function confirmTotpSetup(){
+    const ok=await verifyTotp(totpSetup, totpVerify);
+    if(!ok){setTotpMsg('error:Code incorrect. Please try again.');return;}
+    const ac=loadAuth();ac.totp2fa=totpSetup;saveAuth(ac);
+    setTotpSetup(null);setTotpVerify('');setTotpMsg('ok:2FA enabled for login!');
+  }
+  function disableTotp(){
+    const ac=loadAuth();ac.totp2fa=null;saveAuth(ac);
+    setTotpMsg('ok:2FA disabled for login.');setTotpSetup(null);
+  }
+  async function changeAdminPass(){
+    const ac=loadAuth();
+    if(adminChgOld!==ac.adminPass){setAdminChgMsg('error:Current admin password is incorrect.');return;}
+    if(adminChgNew.length<6){setAdminChgMsg('error:New password must be at least 6 characters.');return;}
+    if(adminChgNew!==adminChgNew2){setAdminChgMsg('error:New passwords do not match.');return;}
+    ac.adminPass=adminChgNew;saveAuth(ac);
+    setAdminChgMsg('ok:Admin password changed successfully!');
+    setAdminChgOld('');setAdminChgNew('');setAdminChgNew2('');
+  }
+  function startAdminTotpSetup(){
+    const secret=genTotpSecret();
+    setAdminTotpSetup(secret);setAdminTotpVerify('');setAdminTotpMsg('');
+  }
+  async function confirmAdminTotpSetup(){
+    const ok=await verifyTotp(adminTotpSetup, adminTotpVerify);
+    if(!ok){setAdminTotpMsg('error:Code incorrect. Please try again.');return;}
+    const ac=loadAuth();ac.adminTotp=adminTotpSetup;saveAuth(ac);
+    setAdminTotpSetup(null);setAdminTotpVerify('');setAdminTotpMsg('ok:2FA enabled for Admin unlock!');
+  }
+  function disableAdminTotp(){
+    const ac=loadAuth();ac.adminTotp=null;saveAuth(ac);
+    setAdminTotpMsg('ok:Admin 2FA disabled.');setAdminTotpSetup(null);
+  }
+
   function requireAdmin(fn){if(adminOn){fn();}else{setPinModal(true);setPinVal('');setPinErr('');}}
-  function checkPin(){if(pinVal===ADMIN_PASS){setAdminOn(true);setPinModal(false);}else{setPinErr('Wrong password.');}}
+  const [adminPinPending2fa,setAdminPinPending2fa]=useState(false);
+  const [adminPinOtp,setAdminPinOtp]=useState('');
+  async function checkPin(){
+    const ac=loadAuth();
+    if(adminPinPending2fa){
+      const ok=await verifyTotp(ac.adminTotp, adminPinOtp);
+      if(ok){setAdminOn(true);setPinModal(false);setAdminPinPending2fa(false);setAdminPinOtp('');try{sessionStorage.setItem('itam_admin','1');}catch(e){}}
+      else{setPinErr('Invalid authenticator code.');}
+      return;
+    }
+    if(pinVal===ac.adminPass){
+      if(ac.adminTotp){setAdminPinPending2fa(true);setPinErr('');setAdminPinOtp('');}
+      else{setAdminOn(true);setPinModal(false);try{sessionStorage.setItem('itam_admin','1');}catch(e){}}
+    }else{setPinErr('Wrong password.');}
+  }
 
   function addHistory(assetId,action,empId,note){
     setH(h=>[{id:'H'+Date.now(),assetId,action,employeeId:empId,note,date:today(),by:'IT Admin'},...h]);
@@ -899,12 +1363,42 @@ function App({onLogout}){
   }
   function handleImport(file){
     importJSON(file,d=>{
-      setAssets(d.assets);setEmployees(d.employees);setHistory(d.history);
-      const t=d.types||DEFAULT_TYPES;setTypes(t);
-      saveDB(d.assets,d.employees,d.history,t);setSaved(true);
-      fbSave(d.assets,d.employees,d.history,t).then(()=>setSyncStatus('synced'));
+      const importedAssets=d.assets||[];
+      const importedEmployees=d.employees||INIT_EMPLOYEES;
+      const importedHistory=d.history||[];
+      const importedTypes=d.types||DEFAULT_TYPES;
+      // Update ref immediately so subsequent auto-saves use the imported data
+      ref.current={assets:importedAssets,employees:importedEmployees,history:importedHistory,types:importedTypes};
+      // Use wrapper setters so the save pipeline stays consistent
+      setA(importedAssets);
+      setE(importedEmployees);
+      setH(importedHistory);
+      setT(importedTypes);
+      saveDB(importedAssets,importedEmployees,importedHistory,importedTypes);
+      setSaved(true);
+      setSyncStatus('syncing');
+      fbSave(importedAssets,importedEmployees,importedHistory,importedTypes)
+        .then(ok=>setSyncStatus(ok?'synced':'error'))
+        .catch(()=>setSyncStatus('error'));
       notify('Data imported and synced to cloud!');
     },err=>notify(err,'error'));
+  }
+  function handleImportExcel(file){
+    importExcel(file, employees, d=>{
+      // Merge imported assets with existing, avoiding duplicate IDs
+      const existingIds = new Set(assets.map(a=>a.id));
+      const newAssets = d.assets.filter(a=>!existingIds.has(a.id));
+      const merged = [...assets, ...newAssets];
+      ref.current={assets:merged, employees:employees, history:history, types:types};
+      setA(merged);
+      saveDB(merged, ref.current.employees, ref.current.history, ref.current.types);
+      setSaved(true);
+      setSyncStatus('syncing');
+      fbSave(merged, ref.current.employees, ref.current.history, ref.current.types)
+        .then(ok=>setSyncStatus(ok?'synced':'error'))
+        .catch(()=>setSyncStatus('error'));
+      notify('Excel imported! '+newAssets.length+' new assets added ('+d.importedCount+' total rows read).');
+    }, err=>notify(err,'error'));
   }
   function resetAll(){
     if(!window.confirm('Reset ALL data to defaults?'))return;
@@ -938,7 +1432,7 @@ function App({onLogout}){
             )
           ),
           React.createElement('div',{className:'nav-section',style:{marginTop:8}},'Access'),
-          React.createElement('div',{className:'role-badge',onClick:()=>{if(adminOn){setAdminOn(false);notify('Admin locked');}else{setPinModal(true);setPinVal('');setPinErr('');}}},
+          React.createElement('div',{className:'role-badge',onClick:()=>{if(adminOn){setAdminOn(false);try{sessionStorage.removeItem('itam_admin');}catch(e){}notify('Admin locked');}else{setPinModal(true);setPinVal('');setPinErr('');}}},
             React.createElement('div',{style:{fontSize:12,marginBottom:2}},adminOn?'🔓 Admin Unlocked':'🔒 View Only'),
             React.createElement('div',{style:{fontSize:10,color:'var(--muted)'}},adminOn?'Click to lock':'Click to unlock')
           )
@@ -968,14 +1462,19 @@ function App({onLogout}){
           ),
 
           React.createElement('button',{className:'btn btn-excel',onClick:()=>exportExcel(assets,employees,history),title:'Download Office Inventory Excel'},'📊 Export Excel'),
-          adminOn&&React.createElement('label',{className:'btn btn-secondary',style:{cursor:'pointer'}},
-            '⬇ Import',
+          adminOn&&React.createElement('label',{className:'btn btn-secondary',style:{cursor:'pointer'},title:'Import from JSON backup'},
+            '⬇ Import JSON',
             React.createElement('input',{type:'file',accept:'.json',style:{display:'none'},onChange:e=>{if(e.target.files[0])handleImport(e.target.files[0]);e.target.value='';}})
+          ),
+          adminOn&&React.createElement('label',{className:'btn btn-excel',style:{cursor:'pointer',background:'rgba(79,142,247,.2)',color:'#7db4fa',borderColor:'rgba(79,142,247,.4)'},title:'Import assets from Excel (.xlsx) — uses exported sheet format'},
+            '📥 Import Excel',
+            React.createElement('input',{type:'file',accept:'.xlsx,.xls',style:{display:'none'},onChange:e=>{if(e.target.files[0])handleImportExcel(e.target.files[0]);e.target.value='';}})
           ),
 
           React.createElement('div',{style:{padding:'4px 8px',borderRadius:7,background:adminOn?'rgba(16,185,129,.1)':'rgba(136,146,164,.1)',border:'1px solid '+(adminOn?'rgba(16,185,129,.3)':'rgba(136,146,164,.2)'),fontSize:11,color:adminOn?'#34d399':'var(--muted)'}},
             adminOn?'🔓 Admin':'🔒 View Only'
           ),
+          adminOn&&React.createElement('button',{className:'btn btn-secondary',onClick:()=>{setSettingsModal(true);setSettingsTab('login');setChgMsg('');setAdminChgMsg('');setTotpMsg('');setAdminTotpMsg('');setTotpSetup(null);setAdminTotpSetup(null);},title:'Security Settings'},'⚙ Settings'),
           React.createElement('button',{className:'btn btn-danger',onClick:onLogout},'⏻ Logout')
         ),
         // CONTENT
@@ -984,27 +1483,112 @@ function App({onLogout}){
           view==='assets'&&React.createElement(AssetsView,{assets,employees,types,getEmp,sc,setModal,removeAsset,unassignAsset,adminOn,requireAdmin}),
           view==='employees'&&React.createElement(EmployeesView,{employees,assets,getEmpAssets,setModal,removeEmployee,adminOn,requireAdmin}),
           view==='assignments'&&React.createElement(AssignmentsView,{assets,employees,getEmp,setModal,unassignAsset,adminOn,requireAdmin}),
-          view==='history'&&React.createElement(HistoryView,{history,assets,employees,getEmp,getAsset}),
+          view==='history'&&React.createElement(HistoryView,{history,assets,employees,getEmp,getAsset,adminOn,onDelete:id=>setH(prev=>prev.filter(h=>h.id!==id))}),
           view==='storage'&&React.createElement(StorageView,{assets,employees,history,types,onBackup:()=>notify('Backup downloaded!')}),
           view==='types'&&React.createElement(TypesView,{types,setT,assets,adminOn,requireAdmin})
         )
       )
     ),
     // PIN MODAL
-    pinModal&&React.createElement('div',{className:'modal-overlay',onClick:()=>setPinModal(false)},
-      React.createElement('div',{className:'modal',style:{maxWidth:340},onClick:e=>e.stopPropagation()},
-        React.createElement('div',{className:'modal-header'},React.createElement('h3',null,'🔐 Admin Access'),React.createElement('button',{className:'modal-close',onClick:()=>setPinModal(false)},'×')),
+    settingsModal&&React.createElement('div',{className:'modal-overlay',onClick:()=>setSettingsModal(false)},
+      React.createElement('div',{className:'modal',style:{maxWidth:480,maxHeight:'80vh',overflow:'auto'},onClick:e=>e.stopPropagation()},
+        React.createElement('div',{className:'modal-header'},
+          React.createElement('h3',null,'⚙ Security Settings'),
+          React.createElement('button',{className:'modal-close',onClick:()=>setSettingsModal(false)},'×')
+        ),
+        React.createElement('div',{style:{display:'flex',gap:4,padding:'0 20px',borderBottom:'1px solid var(--border)',marginBottom:0}},
+          ['login','admin'].map(tab=>React.createElement('button',{key:tab,onClick:()=>setSettingsTab(tab),style:{padding:'8px 16px',background:'none',border:'none',cursor:'pointer',borderBottom:settingsTab===tab?'2px solid var(--accent)':'2px solid transparent',color:settingsTab===tab?'var(--accent)':'var(--muted)',fontWeight:settingsTab===tab?700:400,fontSize:13}},tab==='login'?'Login Password':'Admin Password'))
+        ),
         React.createElement('div',{className:'modal-body'},
-          React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:12}},'Enter admin password to unlock edit access.'),
-          pinErr&&React.createElement('div',{className:'login-error'},pinErr),
-          React.createElement('div',{className:'form-group'},
-            React.createElement('label',{className:'form-label'},'Password'),
-            React.createElement('input',{className:'form-input',type:'password',value:pinVal,autoFocus:true,onChange:e=>setPinVal(e.target.value),onKeyDown:e=>e.key==='Enter'&&checkPin()})
+
+          // ─── LOGIN TAB ───
+          settingsTab==='login'&&React.createElement(React.Fragment,null,
+            React.createElement('h4',{style:{fontSize:13,fontWeight:700,marginBottom:12,color:'var(--text)'}},'Change Login Password'),
+            chgMsg&&React.createElement('div',{className:chgMsg.startsWith('ok:')?'':'login-error',style:chgMsg.startsWith('ok:')?{background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#34d399',marginBottom:12}:{marginBottom:12}},chgMsg.replace(/^(ok|error):/,'')),
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Current Password'),React.createElement('input',{className:'form-input',type:'password',value:chgOld,onChange:e=>setChgOld(e.target.value),placeholder:'Enter current password'})),
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'New Password'),React.createElement('input',{className:'form-input',type:'password',value:chgNew,onChange:e=>setChgNew(e.target.value),placeholder:'Min 6 characters'})),
+            React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Confirm New Password'),React.createElement('input',{className:'form-input',type:'password',value:chgNew2,onChange:e=>setChgNew2(e.target.value),placeholder:'Repeat new password',onKeyDown:e=>e.key==='Enter'&&changeLoginPass()})),
+            React.createElement('button',{className:'btn btn-primary',style:{width:'100%',marginBottom:20},onClick:changeLoginPass},'Update Login Password'),
+
+            React.createElement('hr',{style:{border:'none',borderTop:'1px solid var(--border)',margin:'4px 0 16px'}}),
+            React.createElement('h4',{style:{fontSize:13,fontWeight:700,marginBottom:4,color:'var(--text)'}},'Two-Factor Authentication — Login'),
+            React.createElement('p',{style:{fontSize:11,color:'var(--muted)',marginBottom:12}},'When enabled, you will need an authenticator app code after entering your password.'),
+            totpMsg&&React.createElement('div',{className:totpMsg.startsWith('ok:')?'':'login-error',style:totpMsg.startsWith('ok:')?{background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#34d399',marginBottom:12}:{marginBottom:12}},totpMsg.replace(/^(ok|error):/,'')),
+            !totpSetup&&React.createElement('div',{style:{display:'flex',gap:8}},
+              React.createElement('button',{className:'btn btn-primary',onClick:startTotpSetup},loadAuth().totp2fa?'🔄 Reset 2FA':'➕ Enable 2FA'),
+              loadAuth().totp2fa&&React.createElement('button',{className:'btn btn-danger',onClick:disableTotp},'🗑 Disable 2FA')
+            ),
+            totpSetup&&React.createElement('div',null,
+              React.createElement('p',{style:{fontSize:12,marginBottom:8,color:'var(--text)'}},'1. Scan this QR code with Google Authenticator or Authy:'),
+              React.createElement('img',{src:totpQRUrl(totpSetup,'ITAM-Login','LabelUP'),style:{display:'block',margin:'0 auto 12px',borderRadius:8,background:'#fff',padding:8}}),
+              React.createElement('p',{style:{fontSize:11,color:'var(--muted)',marginBottom:4}},'Or enter this secret manually:'),
+              React.createElement('div',{style:{fontFamily:'monospace',fontSize:12,background:'var(--surface2)',padding:'6px 10px',borderRadius:5,marginBottom:12,wordBreak:'break-all',color:'var(--accent)'}},totpSetup),
+              React.createElement('p',{style:{fontSize:12,marginBottom:6,color:'var(--text)'}},'2. Enter the 6-digit code to confirm:'),
+              React.createElement('input',{className:'form-input',type:'text',inputMode:'numeric',maxLength:6,placeholder:'000000',value:totpVerify,onChange:e=>setTotpVerify(e.target.value.replace(/\D/g,'')),style:{letterSpacing:6,textAlign:'center',fontSize:18,marginBottom:10}}),
+              React.createElement('div',{style:{display:'flex',gap:8}},
+                React.createElement('button',{className:'btn btn-primary',onClick:confirmTotpSetup},'✅ Confirm & Enable'),
+                React.createElement('button',{className:'btn btn-secondary',onClick:()=>setTotpSetup(null)},'Cancel')
+              )
+            )
+          ),
+
+          // ─── ADMIN TAB ───
+          settingsTab==='admin'&&React.createElement(React.Fragment,null,
+            !adminOn&&React.createElement('div',{style:{background:'rgba(245,158,11,.08)',border:'1px solid rgba(245,158,11,.3)',borderRadius:9,padding:'10px 14px',marginBottom:14,fontSize:12,color:'#fbbf24'}},'🔒 Unlock Admin mode first to change admin settings.'),
+            adminOn&&React.createElement(React.Fragment,null,
+              React.createElement('h4',{style:{fontSize:13,fontWeight:700,marginBottom:12,color:'var(--text)'}},'Change Admin Password'),
+              adminChgMsg&&React.createElement('div',{className:adminChgMsg.startsWith('ok:')?'':'login-error',style:adminChgMsg.startsWith('ok:')?{background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#34d399',marginBottom:12}:{marginBottom:12}},adminChgMsg.replace(/^(ok|error):/,'')),
+              React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Current Admin Password'),React.createElement('input',{className:'form-input',type:'password',value:adminChgOld,onChange:e=>setAdminChgOld(e.target.value),placeholder:'Enter current admin password'})),
+              React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'New Admin Password'),React.createElement('input',{className:'form-input',type:'password',value:adminChgNew,onChange:e=>setAdminChgNew(e.target.value),placeholder:'Min 6 characters'})),
+              React.createElement('div',{className:'form-group'},React.createElement('label',{className:'form-label'},'Confirm New Password'),React.createElement('input',{className:'form-input',type:'password',value:adminChgNew2,onChange:e=>setAdminChgNew2(e.target.value),placeholder:'Repeat new password',onKeyDown:e=>e.key==='Enter'&&changeAdminPass()})),
+              React.createElement('button',{className:'btn btn-primary',style:{width:'100%',marginBottom:20},onClick:changeAdminPass},'Update Admin Password'),
+
+              React.createElement('hr',{style:{border:'none',borderTop:'1px solid var(--border)',margin:'4px 0 16px'}}),
+              React.createElement('h4',{style:{fontSize:13,fontWeight:700,marginBottom:4,color:'var(--text)'}},'Two-Factor Authentication — Admin Unlock'),
+              React.createElement('p',{style:{fontSize:11,color:'var(--muted)',marginBottom:12}},'When enabled, unlocking Admin mode will also require an authenticator code.'),
+              adminTotpMsg&&React.createElement('div',{className:adminTotpMsg.startsWith('ok:')?'':'login-error',style:adminTotpMsg.startsWith('ok:')?{background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#34d399',marginBottom:12}:{marginBottom:12}},adminTotpMsg.replace(/^(ok|error):/,'')),
+              !adminTotpSetup&&React.createElement('div',{style:{display:'flex',gap:8}},
+                React.createElement('button',{className:'btn btn-primary',onClick:startAdminTotpSetup},loadAuth().adminTotp?'🔄 Reset Admin 2FA':'➕ Enable Admin 2FA'),
+                loadAuth().adminTotp&&React.createElement('button',{className:'btn btn-danger',onClick:disableAdminTotp},'🗑 Disable Admin 2FA')
+              ),
+              adminTotpSetup&&React.createElement('div',null,
+                React.createElement('p',{style:{fontSize:12,marginBottom:8,color:'var(--text)'}},'1. Scan this QR code with Google Authenticator or Authy:'),
+                React.createElement('img',{src:totpQRUrl(adminTotpSetup,'ITAM-Admin','LabelUP'),style:{display:'block',margin:'0 auto 12px',borderRadius:8,background:'#fff',padding:8}}),
+                React.createElement('p',{style:{fontSize:11,color:'var(--muted)',marginBottom:4}},'Or enter this secret manually:'),
+                React.createElement('div',{style:{fontFamily:'monospace',fontSize:12,background:'var(--surface2)',padding:'6px 10px',borderRadius:5,marginBottom:12,wordBreak:'break-all',color:'var(--accent)'}},adminTotpSetup),
+                React.createElement('p',{style:{fontSize:12,marginBottom:6,color:'var(--text)'}},'2. Enter the 6-digit code to confirm:'),
+                React.createElement('input',{className:'form-input',type:'text',inputMode:'numeric',maxLength:6,placeholder:'000000',value:adminTotpVerify,onChange:e=>setAdminTotpVerify(e.target.value.replace(/\D/g,'')),style:{letterSpacing:6,textAlign:'center',fontSize:18,marginBottom:10}}),
+                React.createElement('div',{style:{display:'flex',gap:8}},
+                  React.createElement('button',{className:'btn btn-primary',onClick:confirmAdminTotpSetup},'✅ Confirm & Enable'),
+                  React.createElement('button',{className:'btn btn-secondary',onClick:()=>setAdminTotpSetup(null)},'Cancel')
+                )
+              )
+            )
+          )
+        )
+      )
+    ),
+    pinModal&&React.createElement('div',{className:'modal-overlay',onClick:()=>{setPinModal(false);setAdminPinPending2fa(false);}},
+      React.createElement('div',{className:'modal',style:{maxWidth:340},onClick:e=>e.stopPropagation()},
+        React.createElement('div',{className:'modal-header'},React.createElement('h3',null,'🔐 Admin Access'),React.createElement('button',{className:'modal-close',onClick:()=>{setPinModal(false);setAdminPinPending2fa(false);}},'×')),
+        React.createElement('div',{className:'modal-body'},
+          !adminPinPending2fa&&React.createElement(React.Fragment,null,
+            React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:12}},'Enter admin password to unlock edit access.'),
+            pinErr&&React.createElement('div',{className:'login-error'},pinErr),
+            React.createElement('div',{className:'form-group'},
+              React.createElement('label',{className:'form-label'},'Password'),
+              React.createElement('input',{className:'form-input',type:'password',value:pinVal,autoFocus:true,onChange:e=>setPinVal(e.target.value),onKeyDown:e=>e.key==='Enter'&&checkPin()})
+            )
+          ),
+          adminPinPending2fa&&React.createElement(React.Fragment,null,
+            React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:12}},'Enter the 6-digit code from your authenticator app.'),
+            pinErr&&React.createElement('div',{className:'login-error'},pinErr),
+            React.createElement('input',{className:'form-input',type:'text',inputMode:'numeric',maxLength:6,autoFocus:true,placeholder:'000000',value:adminPinOtp,onChange:e=>setAdminPinOtp(e.target.value.replace(/\D/g,'')),onKeyDown:e=>e.key==='Enter'&&checkPin(),style:{letterSpacing:8,fontSize:20,textAlign:'center'}})
           )
         ),
         React.createElement('div',{className:'modal-footer'},
-          React.createElement('button',{className:'btn btn-secondary',onClick:()=>setPinModal(false)},'Cancel'),
-          React.createElement('button',{className:'btn btn-primary',onClick:checkPin},'Unlock')
+          React.createElement('button',{className:'btn btn-secondary',onClick:()=>{setPinModal(false);setAdminPinPending2fa(false);}},'Cancel'),
+          React.createElement('button',{className:'btn btn-primary',onClick:checkPin},adminPinPending2fa?'Verify':'Unlock')
         )
       )
     ),
@@ -1282,10 +1866,11 @@ function AssignmentsView({assets,employees,getEmp,setModal,unassignAsset,adminOn
 }
 
 // ---- HISTORY VIEW ----
-function HistoryView({history,assets,employees,getEmp,getAsset}){
+function HistoryView({history,assets,employees,getEmp,getAsset,adminOn,onDelete}){
+  const cols=adminOn?['Date','Action','Asset','Employee','Note','By','']:['Date','Action','Asset','Employee','Note','By'];
   return React.createElement('div',{className:'table-wrap'},
     React.createElement('table',null,
-      React.createElement('thead',null,React.createElement('tr',null,['Date','Action','Asset','Employee','Note','By'].map(h=>React.createElement('th',{key:h},h)))),
+      React.createElement('thead',null,React.createElement('tr',null,cols.map(h=>React.createElement('th',{key:h},h)))),
       React.createElement('tbody',null,history.map(h=>{
         const emp=getEmp(h.employeeId);const ast=getAsset(h.assetId);
         return React.createElement('tr',{key:h.id},
@@ -1294,7 +1879,14 @@ function HistoryView({history,assets,employees,getEmp,getAsset}){
           React.createElement('td',null,ast?React.createElement('div',null,React.createElement('div',null,ast.brand+' '+ast.type),React.createElement('code',{style:{fontSize:10,color:'var(--muted)'}},h.assetId)):React.createElement('code',{style:{fontSize:11}},h.assetId)),
           React.createElement('td',null,emp?React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{className:'avatar avatar-sm'},initials(emp.name)),emp.name):React.createElement('span',{style:{color:'var(--muted)',fontSize:12}},'-')),
           React.createElement('td',null,React.createElement('span',{style:{fontSize:11,color:'var(--muted)'}},h.note)),
-          React.createElement('td',null,React.createElement('span',{className:'badge badge-muted'},h.by))
+          React.createElement('td',null,React.createElement('span',{className:'badge badge-muted'},h.by)),
+          adminOn&&React.createElement('td',null,
+            React.createElement('button',{
+              onClick:()=>window.confirm('Delete this history entry?')&&onDelete(h.id),
+              style:{background:'none',border:'none',cursor:'pointer',color:'var(--danger)',fontSize:15,padding:'2px 6px',borderRadius:4,lineHeight:1},
+              title:'Delete entry'
+            },'🗑')
+          )
         );
       }))
     )
@@ -1517,36 +2109,15 @@ function ModalView({modal,setModal,saveAsset,saveEmployee,assignAsset,assets,emp
 
 
 // ---- STORAGE & BACKUP VIEW ----
-function StorageView({assets,employees,history,types,onBackup,onSchedule}) {
-  const {useState:uS,useEffect:uE}=React;
-  const [schedule,setSchedule]=uS(()=>getScheduledBackup()||{enabled:false,frequency:'weekly',lastBackup:null});
-  const [backupLog,setBackupLog]=uS(()=>getBackupHistory());
+function StorageView({assets,employees,history,types}) {
   const stats=getStorageStats(assets,employees,history,types);
   const barColor=stats.pct<50?'var(--success)':stats.pct<80?'var(--warn)':'var(--danger)';
-
-  function handleScheduleChange(freq){
-    const s={...schedule,frequency:freq};
-    setSchedule(s); setScheduledBackup(s);
-  }
-  function toggleSchedule(){
-    const s={...schedule,enabled:!schedule.enabled};
-    setSchedule(s); setScheduledBackup(s);
-  }
-  function doBackup(){
-    downloadBackup(assets,employees,history,types,'manual');
-    const st=getStorageStats(assets,employees,history,types);
-    logBackup('manual',st);
-    setBackupLog(getBackupHistory());
-    onBackup&&onBackup();
-  }
-
   return React.createElement('div',{style:{padding:'24px',maxWidth:800}},
-    // Storage card
-    React.createElement('div',{className:'card',style:{marginBottom:20}},
+    React.createElement('div',{className:'card'},
       React.createElement('h3',{style:{marginBottom:16,fontSize:16}},'☁ Firebase Firestore Storage'),
       React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:20}},
         ...[
-          {label:'Used',value:stats.kb.toFixed(1)+' KB',sub:stats.mb.toFixed(3)+' MB',color:'var(--primary)'},
+          {label:'Used',value:stats.kb.toFixed(1)+' KB',sub:stats.mb.toFixed(3)+' MB',color:'var(--accent)'},
           {label:'Available',value:(stats.remainMB).toFixed(0)+' MB',sub:'of 1,024 MB free',color:'var(--success)'},
           {label:'Usage',value:stats.pct.toFixed(4)+'%',sub:'of 1 GB limit',color:barColor},
           {label:'Assets',value:stats.assets,sub:'records stored',color:'var(--accent)'},
@@ -1558,7 +2129,6 @@ function StorageView({assets,employees,history,types,onBackup,onSchedule}) {
           React.createElement('div',{style:{fontSize:10,color:'var(--muted)'}},c.sub)
         ))
       ),
-      // Progress bar
       React.createElement('div',{style:{marginBottom:8,fontSize:11,color:'var(--muted)'}},
         'Storage usage: '+stats.kb.toFixed(1)+' KB used of 1,048,576 KB (1 GB)'),
       React.createElement('div',{style:{height:10,background:'var(--surface2)',borderRadius:5,overflow:'hidden'}},
@@ -1566,76 +2136,6 @@ function StorageView({assets,employees,history,types,onBackup,onSchedule}) {
       ),
       React.createElement('div',{style:{fontSize:10,color:'var(--muted)',marginTop:6}},
         '⚡ Firebase Spark (Free): 1 GB storage · 50,000 reads/day · 20,000 writes/day')
-    ),
-
-    // Manual backup card
-    React.createElement('div',{className:'card',style:{marginBottom:20}},
-      React.createElement('h3',{style:{marginBottom:12,fontSize:16}},'📦 Manual Backup'),
-      React.createElement('p',{style:{color:'var(--muted)',fontSize:12,marginBottom:16}},
-        'Downloads a complete JSON backup of all assets, employees, and history. Use this to keep offline copies.'),
-      React.createElement('button',{className:'btn btn-primary',onClick:doBackup,style:{marginRight:8}},'⬇ Download Backup Now'),
-      React.createElement('span',{style:{fontSize:11,color:'var(--muted)'}},
-        backupLog.length ? ('Last manual backup: '+new Date(backupLog.filter(b=>b.label==='manual').slice(-1)[0]?.date||0).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})) : 'No manual backups yet')
-    ),
-
-    // Scheduled backup card
-    React.createElement('div',{className:'card',style:{marginBottom:20}},
-      React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}},
-        React.createElement('h3',{style:{fontSize:16,margin:0}},'⏰ Scheduled Auto-Backup'),
-        React.createElement('div',{
-          onClick:toggleSchedule,
-          style:{width:44,height:24,borderRadius:12,background:schedule.enabled?'var(--success)':'var(--surface2)',cursor:'pointer',position:'relative',transition:'background .2s',border:'1px solid var(--border)'}},
-          React.createElement('div',{style:{position:'absolute',top:2,left:schedule.enabled?20:2,width:18,height:18,borderRadius:'50%',background:'white',transition:'left .2s'}})
-        )
-      ),
-      React.createElement('div',{style:{background:'var(--surface2)',borderRadius:8,padding:'10px 14px',marginBottom:12}},
-        React.createElement('div',{style:{fontSize:12,fontWeight:600,marginBottom:4,color:schedule.enabled?'var(--success)':'var(--warn)'}},
-          schedule.enabled ? '✅ Auto-backup is ON' : '⚠ Auto-backup is OFF'),
-        React.createElement('div',{style:{fontSize:11,color:'var(--muted)',lineHeight:1.7}},
-          '📍 Where: File downloads to your browser\'s Downloads folder automatically.',
-          React.createElement('br'),
-          '⏱ When: Checked every time you open the app + every hour while the tab is open.',
-          React.createElement('br'),
-          schedule.enabled && !schedule.lastBackup ? '🔔 First backup will run the next time you open the app.' :
-          schedule.enabled && getDaysUntilNextBackup()!==null && getDaysUntilNextBackup()<=0 ? '🔴 Backup is overdue — click "Backup Now" above!' :
-          schedule.enabled && getDaysUntilNextBackup()!==null ? '🟢 Next backup in ~'+Math.ceil(getDaysUntilNextBackup())+' day(s).' :
-          '💡 Enable auto-backup to protect your data.'
-        )
-      ),
-      React.createElement('div',{style:{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}},
-        ['daily','weekly','monthly'].map(f=>React.createElement('button',{
-          key:f,
-          onClick:()=>handleScheduleChange(f),
-          className:'btn '+(schedule.frequency===f?'btn-primary':'btn-secondary'),
-          style:{fontSize:11,textTransform:'capitalize'}
-        },f.charAt(0).toUpperCase()+f.slice(1)))
-      ),
-      schedule.lastBackup&&React.createElement('div',{style:{fontSize:11,color:'var(--muted)'}},
-        'Last auto-backup: '+new Date(schedule.lastBackup).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})),
-      !schedule.lastBackup&&schedule.enabled&&React.createElement('div',{style:{fontSize:11,color:'var(--warn)'}},
-        '⏳ First backup will download when you next open the app.')
-    ),
-
-    // Backup log
-    backupLog.length>0&&React.createElement('div',{className:'card'},
-      React.createElement('h3',{style:{marginBottom:12,fontSize:16}},'📋 Backup History'),
-      React.createElement('div',{style:{maxHeight:240,overflowY:'auto'}},
-        React.createElement('table',{className:'data-table',style:{width:'100%'}},
-          React.createElement('thead',null,React.createElement('tr',null,
-            ['Date & Time','Type','Assets','Employees','History','Size'].map(h=>React.createElement('th',{key:h},h))
-          )),
-          React.createElement('tbody',null,
-            [...backupLog].reverse().map((b,i)=>React.createElement('tr',{key:i},
-              React.createElement('td',null,new Date(b.date).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})),
-              React.createElement('td',null,React.createElement('span',{className:'badge '+(b.label.startsWith('auto')?'badge-blue':'badge-muted')},b.label)),
-              React.createElement('td',null,b.assets||'—'),
-              React.createElement('td',null,b.employees||'—'),
-              React.createElement('td',null,b.history||'—'),
-              React.createElement('td',null,b.kb?b.kb.toFixed(1)+' KB':'—')
-            ))
-          )
-        )
-      )
     )
   );
 }
