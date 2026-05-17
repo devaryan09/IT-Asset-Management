@@ -148,14 +148,14 @@ function generateOTP(){
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-async function sendOTPEmail(){
+async function sendOTPEmail(toEmail){
   const code = generateOTP();
   _otpStore = {code, expiry: Date.now() + 10 * 60 * 1000}; // 10 min expiry
   try{
     await emailjs.init(EMAILJS_PUBLIC_KEY);
     await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
-      to_email: RECOVERY_EMAIL,
-      email: RECOVERY_EMAIL,
+      to_email: toEmail,
+      email: toEmail,
       passcode: code,
       app_name: 'LabelUP ITAM',
     });
@@ -180,7 +180,14 @@ const AUTH_KEY='itam_auth_v1';
 function loadAuth(){
   try{
     const r=localStorage.getItem(AUTH_KEY);
-    if(r) return JSON.parse(r);
+    if(r){
+      const d=JSON.parse(r);
+      d.loginPass=LOGIN_PASS;       // always use hardcoded login password
+      d.adminPass=d.adminPass||ADMIN_PASS; // allow admin pass to be changed
+      d.totp2fa=d.totp2fa||null;    // preserve 2FA secret for login
+      d.adminTotp=d.adminTotp||null; // preserve 2FA secret for admin
+      return d;
+    }
   }catch(e){}
   return {loginPass:LOGIN_PASS, adminPass:ADMIN_PASS, totp2fa:null, adminTotp:null};
 }
@@ -215,22 +222,23 @@ function base32Encode(bytes){
 }
 async function totpCode(secret, offset=0){
   try{
-    const T = Math.floor((Date.now()/1000 + offset*30)/30);
+    const T = Math.floor(Date.now()/1000/30) + offset;
     const msg = new Uint8Array(8);
     let t = T;
-    for(let i=7;i>=0;i--){msg[i]=t&0xff;t=t>>>8;}
+    for(let i=7;i>=0;i--){msg[i]=t&0xff;t=Math.floor(t/256);}
     const keyBytes = base32Decode(secret);
     const hash = await hmacSHA1(keyBytes, msg);
-    const offset2 = hash[hash.length-1]&0xf;
-    const code = ((hash[offset2]&0x7f)<<24)|((hash[offset2+1]&0xff)<<16)|((hash[offset2+2]&0xff)<<8)|(hash[offset2+3]&0xff);
+    const off2 = hash[hash.length-1]&0xf;
+    const code = ((hash[off2]&0x7f)<<24)|((hash[off2+1]&0xff)<<16)|((hash[off2+2]&0xff)<<8)|(hash[off2+3]&0xff);
     return String(code%1000000).padStart(6,'0');
-  }catch(e){return null;}
+  }catch(e){console.error('totpCode error:',e);return null;}
 }
 async function verifyTotp(secret, input){
   if(!secret||!input)return false;
-  for(let o=-1;o<=1;o++){
+  const inp=String(input).trim();
+  for(let o=-2;o<=2;o++){
     const c=await totpCode(secret,o);
-    if(c===String(input).trim())return true;
+    if(c&&c===inp)return true;
   }
   return false;
 }
@@ -480,23 +488,7 @@ function exportExcel(assets,employees,history){
   const fname='Office_Inventory_'+new Date().toISOString().slice(0,10)+'.xlsx';
   XLSX.writeFile(wb, fname, {bookType:'xlsx', type:'binary', cellStyles:true});
 }
-function importJSON(file,onOk,onErr){
-  if(!file){onErr('No file selected.');return;}
-  const r=new FileReader();
-  r.onerror=()=>onErr('Failed to read file. Please try again.');
-  r.onload=e=>{
-    try{
-      const d=JSON.parse(e.target.result);
-      if(!d||typeof d!=='object'){throw new Error('not an object');}
-      if(!Array.isArray(d.assets)){throw new Error('missing assets array');}
-      if(!Array.isArray(d.employees)){throw new Error('missing employees array');}
-      onOk(d);
-    }catch(ex){
-      onErr('Invalid backup file: '+ex.message+'. Please use a valid ITAM JSON backup.');
-    }
-  };
-  r.readAsText(file);
-}
+
 
 
 function importExcel(file, employees, onOk, onErr) {
@@ -505,25 +497,73 @@ function importExcel(file, employees, onOk, onErr) {
   r.onerror = () => onErr('Failed to read file. Please try again.');
   r.onload = e => {
     try {
-      const wb = XLSX.read(e.target.result, { type: 'array' });
+      const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true });
       const assets = [];
       const idSet = new Set();
+      // Track new employees discovered in the Excel
+      const allEmployees = [...employees];
+      const newEmployees = [];
+      const seenEmpIds = new Set(employees.map(e => e.id));
+
+      function parseDate(val) {
+        if (!val && val !== 0) return '';
+        if (typeof val === 'number') {
+          // Excel date serial — only convert if in plausible date range (>1000 = after 1902)
+          if (val > 1000) {
+            const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+            return d.toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'});
+          }
+          return String(val); // small numbers are not dates
+        }
+        if (val instanceof Date) return val.toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'});
+        return String(val).trim();
+      }
+      function parseSerial(val) {
+        // Serial numbers should stay as strings, not be date-converted
+        if (!val && val !== 0) return '';
+        if (typeof val === 'number') return String(val);
+        return String(val).trim();
+      }
+
       function getRows(sheetName) {
         const ws = wb.Sheets[sheetName];
         if (!ws) return [];
-        return XLSX.utils.sheet_to_json(ws, { defval: '' });
+        return XLSX.utils.sheet_to_json(ws, { defval: '', raw: true });
       }
-      function findEmpId(empId, empName) {
-        if (empId) {
-          const byId = employees.find(e => e.id === String(empId).trim());
+      function str(v) {
+        if (v === null || v === undefined || v === '') return '';
+        return String(v).trim();
+      }
+
+      function findOrCreateEmp(empId, empName, dept) {
+        const eid = String(empId || '').trim();
+        const ename = String(empName || '').trim();
+        if (!eid && !ename) return null;
+        // Find by ID
+        if (eid) {
+          const byId = allEmployees.find(e => e.id === eid);
           if (byId) return byId.id;
         }
-        if (empName) {
-          const byName = employees.find(e => e.name.toLowerCase() === String(empName).trim().toLowerCase());
+        // Find by name
+        if (ename) {
+          const byName = allEmployees.find(e => e.name.toLowerCase() === ename.toLowerCase());
           if (byName) return byName.id;
+        }
+        // Create new employee
+        if (eid && ename && !seenEmpIds.has(eid)) {
+          const newEmp = {
+            id: eid, name: ename,
+            department: String(dept || '').trim() || 'Unknown',
+            email: '', joinDate: ''
+          };
+          allEmployees.push(newEmp);
+          newEmployees.push(newEmp);
+          seenEmpIds.add(eid);
+          return eid;
         }
         return null;
       }
+
       function makeId(prefix, suffix) {
         let base = String(prefix || 'UNK').trim() + '-' + suffix;
         let id = base, n = 2;
@@ -532,36 +572,38 @@ function importExcel(file, employees, onOk, onErr) {
       }
       // LAPTOP sheet
       getRows('LAPTOP').forEach(row => {
-        const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
-        const serial = String(row['SERIAL NUM (SN#)'] || row['SERIAL'] || '').trim();
-        if (!serial && !row['ITEM NAME']) return;
+        const empId = findOrCreateEmp(row['EMPLOYEE-ID'], row['EMPLOYEE NAME'], row['DEPARTMENT']);
+        const serial = parseSerial(row['SERIAL NUM (SN#)'] || row['SERIAL'] || '');
+        const itemName = str(row['ITEM NAME']);
+        if (!serial && !itemName) return;
         assets.push({
-          id: makeId(row['EMPLOYEE-ID'] || empId || 'LAP', 'LAP'),
-          type: 'Laptop', brand: String(row['ITEM NAME'] || '').trim(), model: '', serial,
+          id: makeId(str(row['EMPLOYEE-ID']) || empId || 'LAP', 'LAP'),
+          type: 'Laptop', brand: itemName, model: '', serial,
           status: empId ? 'Assigned' : 'Available',
-          condition: String(row['CONDITION'] || 'New').trim(), assignedTo: empId || null,
-          assignDate: String(row['DATE ISSUED'] || '').trim(), purchaseDate: String(row['DATE ISSUED'] || '').trim(),
-          ram: String(row['RAM'] || '').trim(), rom: String(row['ROM'] || '').trim(),
-          description: String(row['DESCRIPTION'] || '').trim(), comments: String(row['COMMENTS'] || '').trim(),
+          condition: str(row['CONDITION']) || 'New', assignedTo: empId || null,
+          assignDate: parseDate(row['DATE ISSUED']), purchaseDate: parseDate(row['DATE ISSUED']),
+          ram: str(row['RAM']), rom: str(row['ROM']),
+          description: str(row['DESCRIPTION']), comments: str(row['COMMENTS']),
         });
       });
       // MONITOR sheet
       getRows('MONITOR').forEach(row => {
-        const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
-        if (!row['ITEM NAME']) return;
+        const empId = findOrCreateEmp(row['EMPLOYEE-ID'], row['EMPLOYEE NAME'], row['DEPARTMENT']);
+        const itemName = str(row['ITEM NAME']);
+        if (!itemName) return;
         assets.push({
-          id: makeId(row['EMPLOYEE-ID'] || empId || 'MON', 'MON'),
-          type: 'Monitor', brand: String(row['ITEM NAME'] || '').trim(), model: '',
-          serial: String(row['SERIAL'] || row['SERIAL NUMBER'] || '').trim(),
+          id: makeId(str(row['EMPLOYEE-ID']) || empId || 'MON', 'MON'),
+          type: 'Monitor', brand: itemName, model: '',
+          serial: str(row['SERIAL'] || row['SERIAL NUMBER'] || ''),
           status: empId ? 'Assigned' : 'Available',
-          condition: String(row['CONDITION'] || 'New').trim(), assignedTo: empId || null,
-          assignDate: String(row['DATE ISSUED'] || '').trim(), purchaseDate: String(row['DATE ISSUED'] || '').trim(),
-          ram: '', rom: '', description: String(row['COMMENTS'] || '').trim(), comments: String(row['COMMENTS'] || '').trim(),
+          condition: str(row['CONDITION']) || 'New', assignedTo: empId || null,
+          assignDate: parseDate(row['DATE ISSUED']), purchaseDate: parseDate(row['DATE ISSUED']),
+          ram: '', rom: '', description: str(row['COMMENTS']), comments: str(row['COMMENTS']),
         });
       });
       // KEYBOARD-MOUSE sheet
       getRows('KEYBOARD- MOUSE').forEach(row => {
-        const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+        const empId = findOrCreateEmp(row['EMPLOYEE-ID'], row['EMPLOYEE NAME'], row['DEPARTMENT']);
         const brand = String(row['ACCESSORY BRAND/MODEL'] || '').trim();
         const kbQty = String(row['KEYBOARD'] || '').trim();
         const msQty = String(row['MOUSE'] || '').trim();
@@ -588,7 +630,7 @@ function importExcel(file, employees, onOk, onErr) {
       const hpSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('HEAD')) || '';
       if (hpSheetName) {
         getRows(hpSheetName).forEach(row => {
-          const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+          const empId = findOrCreateEmp(row['EMPLOYEE-ID'], row['EMPLOYEE NAME'], '');
           const brand = String(row['HEADPHONE BRAND/MODEL'] || '').trim();
           if (!brand) return;
           assets.push({
@@ -604,7 +646,7 @@ function importExcel(file, employees, onOk, onErr) {
       const standSheetName = wb.SheetNames.find(n => n.toUpperCase().includes('STAND')) || '';
       if (standSheetName) {
         getRows(standSheetName).forEach(row => {
-          const empId = findEmpId(row['EMPLOYEE-ID'], row['EMPLOYEE NAME']);
+          const empId = findOrCreateEmp(row['EMPLOYEE-ID'], row['EMPLOYEE NAME'], '');
           const brand = String(row['STAND BRAND/MODEL'] || '').trim();
           if (!brand) return;
           assets.push({
@@ -638,7 +680,7 @@ function importExcel(file, employees, onOk, onErr) {
         onErr('No asset rows found. Make sure sheet names match: LAPTOP, MONITOR, KEYBOARD- MOUSE, etc.');
         return;
       }
-      onOk({ assets, importedCount: assets.length });
+      onOk({ assets, newEmployees, importedCount: assets.length });
     } catch (ex) {
       onErr('Failed to parse Excel file: ' + ex.message);
     }
@@ -647,272 +689,8 @@ function importExcel(file, employees, onOk, onErr) {
 }
 
 // ---- SAMPLE DATA ----
-const INIT_EMPLOYEES=[
-  {id:'LU001',name:'Suraj Sunar',department:'IT',email:'suraj.sunar@labelup.com',joinDate:''},
-  {id:'LU002',name:'Navraj Sunar',department:'IT',email:'navraj.sunar@labelup.com',joinDate:''},
-  {id:'LU003',name:'Ayush Kumar',department:'IT',email:'ayush.kumar@labelup.com',joinDate:''},
-  {id:'LU004',name:'Mahesh Kumar',department:'IT',email:'mahesh.kumar@labelup.com',joinDate:''},
-  {id:'LU005',name:'Anjali Rawat',department:'IT',email:'anjali.rawat@labelup.com',joinDate:''},
-  {id:'LU006',name:'Shivam Verma',department:'IT',email:'shivam.verma@labelup.com',joinDate:''},
-  {id:'LU007',name:'Sushan Bishowkarma',department:'IT',email:'sushan.bishowkarma@labelup.com',joinDate:''},
-  {id:'LU008',name:'Sakshi Bhardwaj',department:'IT',email:'sakshi.bhardwaj@labelup.com',joinDate:''},
-  {id:'LU009',name:'Dishant Kumar',department:'IT',email:'dishant.kumar@labelup.com',joinDate:''},
-  {id:'LU010',name:'Sandeep Sharma',department:'IT',email:'sandeep.sharma@labelup.com',joinDate:''},
-  {id:'LU011',name:'V.Vishnu Prashanth',department:'IT',email:'v.vishnu.prashanth@labelup.com',joinDate:''},
-  {id:'LU012',name:'Prashansha Singh',department:'IT',email:'prashansha.singh@labelup.com',joinDate:''},
-  {id:'LU013',name:'Sahil Gupta',department:'IT',email:'sahil.gupta@labelup.com',joinDate:''},
-  {id:'LU015',name:'Tanya Choudhary',department:'IT',email:'tanya.choudhary@labelup.com',joinDate:''},
-  {id:'LU017',name:'Abhishek Dora',department:'IT',email:'abhishek.dora@labelup.com',joinDate:''},
-  {id:'LU021',name:'Khushi Verma',department:'IT',email:'khushi.verma@labelup.com',joinDate:''},
-  {id:'LU023',name:'Taranpreet Singh',department:'IT',email:'taranpreet.singh@labelup.com',joinDate:''},
-  {id:'LU024',name:'Neema Rawat',department:'IT',email:'neema.rawat@labelup.com',joinDate:''},
-  {id:'LU027',name:'Amrutha Achu',department:'IT',email:'amrutha.achu@labelup.com',joinDate:''},
-  {id:'LU028',name:'Aditya Kamal Soni',department:'IT',email:'aditya.kamal.soni@labelup.com',joinDate:''},
-  {id:'LU029',name:'Priya Verma',department:'IT',email:'priya.verma@labelup.com',joinDate:''},
-  {id:'LU030',name:'Sakshi Jha',department:'IT',email:'sakshi.jha@labelup.com',joinDate:''},
-  {id:'LU031',name:'Rajneesh Kumar Yadav',department:'IT',email:'rajneesh.kumar.yadav@labelup.com',joinDate:''},
-  {id:'LU034',name:'Akshit Semwal',department:'IT',email:'akshit.semwal@labelup.com',joinDate:''},
-  {id:'LU035',name:'Ayushi Garg',department:'IT',email:'ayushi.garg@labelup.com',joinDate:''},
-  {id:'LU036',name:'Malvika Sharma',department:'IT',email:'malvika.sharma@labelup.com',joinDate:''},
-  {id:'LU037',name:'Ragini Srivastava',department:'IT',email:'ragini.srivastava@labelup.com',joinDate:''},
-  {id:'LU038',name:'Tarushi Singh',department:'IT',email:'tarushi.singh@labelup.com',joinDate:''},
-  {id:'LU040',name:'Mansi Sharma',department:'IT',email:'mansi.sharma@labelup.com',joinDate:''},
-  {id:'LU041',name:'Sarvjeet Kumar',department:'IT',email:'sarvjeet.kumar@labelup.com',joinDate:''},
-  {id:'LU042',name:'Divya Maindoliya',department:'IT',email:'divya.maindoliya@labelup.com',joinDate:''},
-  {id:'LU043',name:'Rohan Rai',department:'IT',email:'rohan.rai@labelup.com',joinDate:''},
-  {id:'LU044',name:'Iqra Hashmi',department:'IT',email:'iqra.hashmi@labelup.com',joinDate:''},
-  {id:'LU046',name:'Rishabh Madhok',department:'IT',email:'rishabh.madhok@labelup.com',joinDate:''},
-  {id:'LU047',name:'Lucky Khan',department:'IT',email:'lucky.khan@labelup.com',joinDate:''},
-  {id:'LU048',name:'Leena Km',department:'IT',email:'leena.km@labelup.com',joinDate:''},
-  {id:'LU049',name:'Roshni Verma',department:'IT',email:'roshni.verma@labelup.com',joinDate:''},
-  {id:'LU050',name:'Dev Singh',department:'IT',email:'dev.singh@labelup.com',joinDate:''},
-  {id:'KOV-001',name:'Rajat Sharma',department:'Kovark',email:'rajat.sharma@labelup.com',joinDate:''},
-  {id:'OT001',name:'Jatin',department:'Other',email:'jatin@labelup.com',joinDate:''},
-  {id:'LU014',name:'Varsha Pachouri',department:'IT',email:'varsha.pachouri@labelup.com',joinDate:'',status:'Resigned'},
-  {id:'LU019',name:'Cheryl Lalrindiki',department:'IT',email:'cheryl.lalrindiki@labelup.com',joinDate:'',status:'Resigned'},
-  {id:'LU022',name:'Deevanshu Malhotra',department:'IT',email:'deevanshu.malhotra@labelup.com',joinDate:'',status:'Resigned'},
-  {id:'LU025',name:'Sonalika Kumari',department:'IT',email:'sonalika.kumari@labelup.com',joinDate:'',status:'Resigned'},
-  {id:'LU026',name:'R Lalduhsangi',department:'IT',email:'r.lalduhsangi@labelup.com',joinDate:'',status:'Resigned'},
-  {id:'LU032',name:'Sandeep Rawat',department:'IT',email:'sandeep.rawat@labelup.com',joinDate:'',status:'Resigned'},
-  {id:'LU033',name:'Shradha Nischhal',department:'IT',email:'shradha.nischhal@labelup.com',joinDate:'',status:'Resigned'},
-  {id:'LU039',name:'Tanisha Raj',department:'IT',email:'tanisha.raj@labelup.com',joinDate:'',status:'Resigned'},
-  {id:'LU045',name:'Ishika Channdel',department:'IT',email:'ishika.channdel@labelup.com',joinDate:'',status:'Resigned'}
-];
-const INIT_ASSETS=[
-  {id:'LU001-LAP',type:'Laptop',brand:'HP-Pavilion',model:'',serial:'5CD2169GZ7',status:'Assigned',condition:'New',assignedTo:'LU001',assignDate:'27-Dec-2022',purchaseDate:'27-Dec-2022',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU002-LAP',type:'Laptop',brand:'HP-Pavilion',model:'',serial:'FD341F3231C9',status:'Assigned',condition:'Used',assignedTo:'LU002',assignDate:'14-Nov-2022',purchaseDate:'14-Nov-2022',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5500U with Radeon Graphics 2.10 GHz',comments:'Got this used laptop from The Netherlands'},
-  {id:'LU003-LAP',type:'Laptop',brand:'Lenovo ideaPad 3',model:'',serial:'PG03CW1B',status:'Assigned',condition:'New',assignedTo:'LU003',assignDate:'N/A',purchaseDate:'N/A',ram:'20GB',rom:'512GB',description:'AMD Ryzen 5 5500U with Radeon Graphics 2.10 GHz',comments:''},
-  {id:'LU004-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND3372Z7J',status:'Assigned',condition:'New',assignedTo:'LU004',assignDate:'28-Jul-2025',purchaseDate:'28-Jul-2025',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU005-LAP',type:'Laptop',brand:'Lenovo ideaPad 3',model:'',serial:'PG03DKZP',status:'Assigned',condition:'New',assignedTo:'LU005',assignDate:'03-Apr-2023',purchaseDate:'03-Apr-2023',ram:'20GB',rom:'512GB',description:'AMD Ryzen 5 5500U with Radeon Graphics 2.10 GHz',comments:''},
-  {id:'LU006-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND3372Z7L',status:'Assigned',condition:'New',assignedTo:'LU006',assignDate:'04-Mar-2024',purchaseDate:'04-Mar-2024',ram:'16GB',rom:'475GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:'New System allot'},
-  {id:'LU007-LAP',type:'Laptop',brand:'Lenovo ideaPad 3',model:'',serial:'PG03CVWJ',status:'Assigned',condition:'New',assignedTo:'LU007',assignDate:'22-Aug-2023',purchaseDate:'22-Aug-2023',ram:'20GB',rom:'512GB',description:'AMD Ryzen 5 5500U with Radeon Graphics 2.10 GHz',comments:''},
-  {id:'LU008-LAP',type:'Laptop',brand:'Lenovo ideaPad 3',model:'',serial:'PG03DS3T',status:'Assigned',condition:'New',assignedTo:'LU008',assignDate:'22-Aug-2023',purchaseDate:'22-Aug-2023',ram:'20GB',rom:'512GB',description:'AMD Ryzen 5 5500U with Radeon Graphics 2.10 GHz',comments:''},
-  {id:'LU009-LAP',type:'Laptop',brand:'Lenovo ThinkBook 15P IMH',model:'',serial:'PF3MZD7F',status:'Assigned',condition:'Used',assignedTo:'LU009',assignDate:'02-Jan-2024',purchaseDate:'02-Jan-2024',ram:'16GB',rom:'512GB',description:'Intel Core i5-10300H CPU 2.50GHz',comments:'Got this used laptop from The Netherlands'},
-  {id:'LU010-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND3372Z6W',status:'Assigned',condition:'New',assignedTo:'LU010',assignDate:'15-Jan-2024',purchaseDate:'15-Jan-2024',ram:'16GB',rom:'256GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU011-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND43001B7',status:'Assigned',condition:'New',assignedTo:'LU011',assignDate:'27-Dec-2024',purchaseDate:'27-Dec-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU012-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4221VYW',status:'Assigned',condition:'New',assignedTo:'LU012',assignDate:'19-Feb-2024',purchaseDate:'19-Feb-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU013-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND441152F',status:'Assigned',condition:'New',assignedTo:'LU013',assignDate:'27-Dec-2024',purchaseDate:'27-Dec-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU015-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4311ZZ9',status:'Assigned',condition:'New',assignedTo:'LU015',assignDate:'27-Dec-2024',purchaseDate:'27-Dec-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU017-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4221W07',status:'Assigned',condition:'New',assignedTo:'LU017',assignDate:'04-Apr-2024',purchaseDate:'04-Apr-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU021-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND3372XQF',status:'Assigned',condition:'New',assignedTo:'LU021',assignDate:'21-Jul-2025',purchaseDate:'21-Jul-2025',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU023-LAP',type:'Laptop',brand:'HP',model:'',serial:'5CD512DT28',status:'Assigned',condition:'New',assignedTo:'LU023',assignDate:'10-Jun-2023',purchaseDate:'10-Jun-2023',ram:'16GB',rom:'512GB',description:'AMD Ryzen 3 7320U with Radeon Graphics (2.40 GHz)',comments:''},
-  {id:'LU024-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND3372Z32',status:'Assigned',condition:'New',assignedTo:'LU024',assignDate:'10-Jun-2024',purchaseDate:'10-Jun-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU027-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4221VTW',status:'Assigned',condition:'New',assignedTo:'LU027',assignDate:'08-Jul-2024',purchaseDate:'08-Jul-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU028-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4221W1V',status:'Assigned',condition:'New',assignedTo:'LU028',assignDate:'08-Jul-2024',purchaseDate:'08-Jul-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU029-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4290Y90',status:'Assigned',condition:'New',assignedTo:'LU029',assignDate:'27-Dec-2024',purchaseDate:'27-Dec-2024',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics 2.30 GHz',comments:''},
-  {id:'LU030-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4221W15',status:'Assigned',condition:'New',assignedTo:'LU030',assignDate:'05-Mar-2025',purchaseDate:'05-Mar-2025',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics, 2301 Mhz, 6 Core(s)',comments:''},
-  {id:'LU031-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4244ZG5',status:'Assigned',condition:'New',assignedTo:'LU031',assignDate:'05-Mar-2025',purchaseDate:'05-Mar-2025',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics, 2301 Mhz, 6 Core(s)',comments:''},
-  {id:'LU034-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND42324RK',status:'Assigned',condition:'New',assignedTo:'LU034',assignDate:'17-Mar-2025',purchaseDate:'17-Mar-2025',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics',comments:''},
-  {id:'LU035-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND4281N12',status:'Assigned',condition:'New',assignedTo:'LU035',assignDate:'17-Mar-2025',purchaseDate:'17-Mar-2025',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics',comments:''},
-  {id:'LU036-LAP',type:'Laptop',brand:'HP',model:'',serial:'CND42819HN',status:'Assigned',condition:'New',assignedTo:'LU036',assignDate:'24-Aug-2025',purchaseDate:'24-Aug-2025',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 5625U with Radeon Graphics',comments:''},
-  {id:'LU037-LAP',type:'Laptop',brand:'HP',model:'',serial:'5CD512DT6J',status:'Assigned',condition:'New',assignedTo:'LU037',assignDate:'07-Jan-2026',purchaseDate:'07-Jan-2026',ram:'16GB',rom:'512GB',description:'AMD Ryzen 3 7320U with Radeon Graphics (2.40 GHz)',comments:''},
-  {id:'LU038-LAP',type:'Laptop',brand:'HP',model:'',serial:'5CD512DT5V',status:'Assigned',condition:'New',assignedTo:'LU038',assignDate:'08-Oct-2025',purchaseDate:'08-Oct-2025',ram:'16GB',rom:'477GB',description:'AMD Ryzen 3 7320U with Radeon Graphics (2.40 GHz)',comments:''},
-  {id:'LU040-LAP',type:'Laptop',brand:'HP',model:'',serial:'C2D5B669',status:'Assigned',condition:'New',assignedTo:'LU040',assignDate:'05-Dec-2025',purchaseDate:'05-Dec-2025',ram:'16GB',rom:'477GB',description:'AMD Ryzen 5 5625U with Radeon Graphics',comments:''},
-  {id:'LU041-LAP',type:'Laptop',brand:'HP',model:'',serial:'5CD512DW1Z',status:'Assigned',condition:'New',assignedTo:'LU041',assignDate:'06-Oct-2025',purchaseDate:'06-Oct-2025',ram:'16GB',rom:'477GB',description:'AMD Ryzen 3 7320U with Radeon Graphics',comments:''},
-  {id:'LU042-LAP',type:'Laptop',brand:'HP',model:'',serial:'5CD512DW7T',status:'Assigned',condition:'New',assignedTo:'LU042',assignDate:'24-Nov-2025',purchaseDate:'24-Nov-2025',ram:'16GB',rom:'477GB',description:'AMD Ryzen 3 7320U with Radeon Graphics',comments:''},
-  {id:'LU043-LAP',type:'Laptop',brand:'HP',model:'',serial:'SCD512DT63',status:'Assigned',condition:'New',assignedTo:'LU043',assignDate:'30-Jan-2026',purchaseDate:'30-Jan-2026',ram:'16GB',rom:'512GB',description:'AMD Ryzen 3 7320U with Radeon Graphic',comments:''},
-  {id:'LU044-LAP',type:'Laptop',brand:'Lenovo',model:'',serial:'PG058G6',status:'Assigned',condition:'New',assignedTo:'LU044',assignDate:'03-Dec-2025',purchaseDate:'03-Dec-2025',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 7520U with Radeon Graphics Lenovo V15 G4 AMN',comments:''},
-  {id:'LU046-LAP',type:'Laptop',brand:'Lenovo',model:'',serial:'PF5K881C',status:'Assigned',condition:'New',assignedTo:'LU046',assignDate:'12-Jan-2026',purchaseDate:'12-Jan-2026',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 7520U with Radeon Graphics Lenovo V15 G4 AMN',comments:''},
-  {id:'LU047-LAP',type:'Laptop',brand:'Lenovo',model:'',serial:'PG058EE4',status:'Assigned',condition:'New',assignedTo:'LU047',assignDate:'12-Jan-2026',purchaseDate:'12-Jan-2026',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 7520U with Radeon Graphics Lenovo V15 G4 AMN',comments:''},
-  {id:'LU048-LAP',type:'Laptop',brand:'Lenovo',model:'',serial:'PG056NJQ',status:'Assigned',condition:'New',assignedTo:'LU048',assignDate:'12-Jan-2026',purchaseDate:'12-Jan-2026',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 7520U with Radeon Graphics Lenovo V15 G4 AMN',comments:''},
-  {id:'LU049-LAP',type:'Laptop',brand:'Lenovo',model:'',serial:'PG058KLL',status:'Assigned',condition:'New',assignedTo:'LU049',assignDate:'12-Jan-2026',purchaseDate:'12-Jan-2026',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 7520U with Radeon Graphics Lenovo V15 G4 AMN',comments:''},
-  {id:'LU050-LAP',type:'Laptop',brand:'Lenovo',model:'',serial:'PF5KC7QA',status:'Assigned',condition:'New',assignedTo:'LU050',assignDate:'12-Jan-2026',purchaseDate:'12-Jan-2026',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 7520U with Radeon Graphics Lenovo V15 G4 AMN',comments:''},
-  {id:'KOV-001-LAP',type:'Laptop',brand:'Lenovo',model:'',serial:'PG058J8N',status:'Assigned',condition:'New',assignedTo:'KOV-001',assignDate:'N/A',purchaseDate:'N/A',ram:'16GB',rom:'512GB',description:'AMD Ryzen 5 7520U with Radeon Graphics Lenovo V15 G4 AMN',comments:''},
-  {id:'OT001-LAP',type:'Laptop',brand:'MacBook Pro',model:'',serial:'DQ7630G93V',status:'Assigned',condition:'New',assignedTo:'OT001',assignDate:'N/A',purchaseDate:'N/A',ram:'18GB',rom:'',description:'Apple M3 Pro, Memory 18GB, macOS 15.1.1',comments:'WD Elements 1TB Hard Disk Assigned'},
-  {id:'LU001-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A',status:'Assigned',condition:'New',assignedTo:'LU001',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU002-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A-2',status:'Assigned',condition:'New',assignedTo:'LU002',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU003-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A-3',status:'Assigned',condition:'New',assignedTo:'LU003',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU004-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A-4',status:'Assigned',condition:'New',assignedTo:'LU004',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU005-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A',status:'Assigned',condition:'New',assignedTo:'LU005',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU006-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A-6',status:'Assigned',condition:'New',assignedTo:'LU006',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU007-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A-7',status:'Assigned',condition:'New',assignedTo:'LU007',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU008-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A-8',status:'Assigned',condition:'New',assignedTo:'LU008',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU009-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A-9',status:'Assigned',condition:'New',assignedTo:'LU009',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU010-MON',type:'Monitor',brand:'Samsung',model:'',serial:'SM-N/A-10',status:'Assigned',condition:'New',assignedTo:'LU010',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU011-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-11',status:'Assigned',condition:'New',assignedTo:'LU011',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU012-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-12',status:'Assigned',condition:'New',assignedTo:'LU012',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU013-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-13',status:'Assigned',condition:'New',assignedTo:'LU013',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU015-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-15',status:'Assigned',condition:'New',assignedTo:'LU015',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU017-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-17',status:'Assigned',condition:'New',assignedTo:'LU017',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU021-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-21',status:'Assigned',condition:'New',assignedTo:'LU021',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU023-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-23',status:'Assigned',condition:'New',assignedTo:'LU023',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU024-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-24',status:'Assigned',condition:'New',assignedTo:'LU024',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU027-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-27',status:'Assigned',condition:'New',assignedTo:'LU027',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU028-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-28',status:'Assigned',condition:'New',assignedTo:'LU028',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU029-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-29',status:'Assigned',condition:'New',assignedTo:'LU029',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU030-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-30',status:'Assigned',condition:'New',assignedTo:'LU030',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU031-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOCWOMS2Q4100795',status:'Assigned',condition:'New',assignedTo:'LU031',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU034-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-34',status:'Assigned',condition:'New',assignedTo:'LU034',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU035-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-35',status:'Assigned',condition:'New',assignedTo:'LU035',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU036-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-36',status:'Assigned',condition:'New',assignedTo:'LU036',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU037-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-37',status:'Assigned',condition:'New',assignedTo:'LU037',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU038-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-38',status:'Assigned',condition:'New',assignedTo:'LU038',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU040-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-40',status:'Assigned',condition:'New',assignedTo:'LU040',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU041-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-41',status:'Assigned',condition:'New',assignedTo:'LU041',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU042-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-42',status:'Assigned',condition:'New',assignedTo:'LU042',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU043-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-43',status:'Assigned',condition:'New',assignedTo:'LU043',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU044-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-44',status:'Assigned',condition:'New',assignedTo:'LU044',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU046-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-46',status:'Assigned',condition:'New',assignedTo:'LU046',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU047-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-47',status:'Assigned',condition:'New',assignedTo:'LU047',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU048-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-48',status:'Assigned',condition:'New',assignedTo:'LU048',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU049-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-49',status:'Assigned',condition:'New',assignedTo:'LU049',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU050-MON',type:'Monitor',brand:'AOC',model:'',serial:'AOC-N/A-50',status:'Assigned',condition:'New',assignedTo:'LU050',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'OT001-MON',type:'Monitor',brand:'Acer',model:'',serial:'AC-N/A-OT1',status:'Assigned',condition:'New',assignedTo:'OT001',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU003-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CL-K18V-A07',status:'Assigned',condition:'New',assignedTo:'LU003',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU003-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'4CL-K18W-A07',status:'Assigned',condition:'New',assignedTo:'LU003',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU004-MS',type:'Mouse',brand:'Dell Wired Mouse',model:'',serial:'CN-0GXCWV-LO300-482-01KU',status:'Assigned',condition:'New',assignedTo:'LU004',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'Only wired mouse',comments:'Only wired mouse'},
-  {id:'LU005-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-43R-K1TR-A06',status:'Assigned',condition:'New',assignedTo:'LU005',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU005-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'43R-M1TR-A06',status:'Assigned',condition:'New',assignedTo:'LU005',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU006-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-5AN-KOAG-A04',status:'Assigned',condition:'New',assignedTo:'LU006',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New assigned 28th Apr',comments:'New assigned 28th Apr'},
-  {id:'LU006-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-5AN-MOAG-A04',status:'Assigned',condition:'New',assignedTo:'LU006',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New assigned 28th Apr',comments:'New assigned 28th Apr'},
-  {id:'LU007-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-1CD-K04S-A00',status:'Assigned',condition:'New',assignedTo:'LU007',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'Old Mouse not working',comments:'Old Mouse not working'},
-  {id:'LU007-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-1CD-M04S-A00',status:'Assigned',condition:'New',assignedTo:'LU007',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'Old Mouse not working',comments:'Old Mouse not working'},
-  {id:'LU008-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-34S-K3XX-A02',status:'Assigned',condition:'New',assignedTo:'LU008',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU008-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'34S-M3XX-A02',status:'Assigned',condition:'New',assignedTo:'LU008',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU009-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-L0300-48D-K11D-A04',status:'Assigned',condition:'New',assignedTo:'LU009',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU009-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'48D-M11D-A04',status:'Assigned',condition:'New',assignedTo:'LU009',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU010-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CL-K18W-A07',status:'Assigned',condition:'New',assignedTo:'LU010',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU010-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CL-M18W-A07',status:'Assigned',condition:'New',assignedTo:'LU010',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU011-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-52S-KOW3-A04',status:'Assigned',condition:'New',assignedTo:'LU011',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU011-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'LO300-52S-MOW3-A04',status:'Assigned',condition:'New',assignedTo:'LU011',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU012-KB',type:'Keyboard',brand:'Dell Wired Mouse',model:'',serial:'CN-04WJ8P-LO300-593-K31F-A07',status:'Assigned',condition:'New',assignedTo:'LU012',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU012-MS',type:'Mouse',brand:'Dell Wired Mouse',model:'',serial:'CN-0GXCWV-L0300-482-01KB',status:'Assigned',condition:'New',assignedTo:'LU012',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU013-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN04WJ8P-L0300-594-K13L-A07',status:'Assigned',condition:'New',assignedTo:'LU013',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU013-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'594-M13L-A07',status:'Assigned',condition:'New',assignedTo:'LU013',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU015-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CL-K18Z-A07',status:'Assigned',condition:'New',assignedTo:'LU015',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU015-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'LO300-4CL-M18Z-A07',status:'Assigned',condition:'New',assignedTo:'LU015',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU017-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-397-K5K7-A02',status:'Assigned',condition:'New',assignedTo:'LU017',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU017-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'397-M5K7-A02',status:'Assigned',condition:'New',assignedTo:'LU017',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU021-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CV-K3V2-A04',status:'Assigned',condition:'New',assignedTo:'LU021',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU021-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'4CV-K3V2-A04',status:'Assigned',condition:'New',assignedTo:'LU021',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU023-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CV-K3UY-A04',status:'Assigned',condition:'New',assignedTo:'LU023',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU023-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'4CV-M3UY-A04',status:'Assigned',condition:'New',assignedTo:'LU023',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU024-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300//593-K31B-A07',status:'Assigned',condition:'New',assignedTo:'LU024',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU024-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300//593-M31B-A07',status:'Assigned',condition:'New',assignedTo:'LU024',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU027-KB',type:'Keyboard',brand:'HP Wireless',model:'',serial:'KM260240918361',status:'Assigned',condition:'New',assignedTo:'LU027',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU027-MS',type:'Mouse',brand:'HP Wireless',model:'',serial:'M260240918361',status:'Assigned',condition:'New',assignedTo:'LU027',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU028-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-L0300-39I-K3ID-A02',status:'Assigned',condition:'New',assignedTo:'LU028',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'Only wired mouse',comments:'Only wired mouse'},
-  {id:'LU028-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-0GXCWV-LO300-481-03SI',status:'Assigned',condition:'New',assignedTo:'LU028',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'Only wired mouse',comments:'Only wired mouse'},
-  {id:'LU029-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4AB-KOT7-A04',status:'Assigned',condition:'New',assignedTo:'LU029',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU029-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'4AB-MOT7-A04',status:'Assigned',condition:'New',assignedTo:'LU029',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU030-KB',type:'Keyboard',brand:'HP Wireless',model:'',serial:'KM260241008549',status:'Assigned',condition:'New',assignedTo:'LU030',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU030-MS',type:'Mouse',brand:'HP Wireless',model:'',serial:'M260241008549',status:'Assigned',condition:'New',assignedTo:'LU030',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU031-KB',type:'Keyboard',brand:'Dell Wired Mouse',model:'',serial:'CN-04WJ8P-LO300-3C6-K1J7-A04',status:'Assigned',condition:'New',assignedTo:'LU031',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU031-MS',type:'Mouse',brand:'Dell Wired Mouse',model:'',serial:'CN-05NT8R-PRC00-518-04PJ',status:'Assigned',condition:'New',assignedTo:'LU031',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU034-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-52S-KOVA-A04',status:'Assigned',condition:'New',assignedTo:'LU034',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU034-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-52S-MOVA-A04',status:'Assigned',condition:'New',assignedTo:'LU034',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU035-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4AB-K08U-A04',status:'Assigned',condition:'New',assignedTo:'LU035',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU035-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'4AB-M08U-A04',status:'Assigned',condition:'New',assignedTo:'LU035',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU036-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CV-K3WK-A04',status:'Assigned',condition:'New',assignedTo:'LU036',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU036-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-ACV-W3WK-A04',status:'Assigned',condition:'New',assignedTo:'LU036',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU037-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4AB-K11S-A04',status:'Assigned',condition:'New',assignedTo:'LU037',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU037-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4AB-M11S-A04',status:'Assigned',condition:'New',assignedTo:'LU037',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU038-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-397-K5K4-A02',status:'Assigned',condition:'New',assignedTo:'LU038',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU038-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-397-M5K4-A02',status:'Assigned',condition:'New',assignedTo:'LU038',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New KB Mouse set',comments:'New KB Mouse set'},
-  {id:'LU040-KB',type:'Keyboard',brand:'Dell Wired Mouse',model:'',serial:'CN-04WJ8P-LO300-57C-K07C-A04',status:'Assigned',condition:'New',assignedTo:'LU040',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU040-MS',type:'Mouse',brand:'Dell Wired Mouse',model:'',serial:'CN-0GXCWV-L0300-481-03SP',status:'Assigned',condition:'New',assignedTo:'LU040',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU041-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CL-K18S-A07',status:'Assigned',condition:'New',assignedTo:'LU041',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU041-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-4CL-M18S-A07',status:'Assigned',condition:'New',assignedTo:'LU041',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU042-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-55A-K1YR-A07',status:'Assigned',condition:'New',assignedTo:'LU042',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU042-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-55A-M1YR-A07',status:'Assigned',condition:'New',assignedTo:'LU042',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU043-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-L0300-55A-K1Q-A07',status:'Assigned',condition:'New',assignedTo:'LU043',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU043-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-55A-M1YQ-A07',status:'Assigned',condition:'New',assignedTo:'LU043',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU044-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-593-K319-A07',status:'Assigned',condition:'New',assignedTo:'LU044',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU044-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-593-M319-A07',status:'Assigned',condition:'New',assignedTo:'LU044',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU046-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-594-K13J-A07',status:'Assigned',condition:'New',assignedTo:'LU046',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU046-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-594-M13J-A07',status:'Assigned',condition:'New',assignedTo:'LU046',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU047-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-594-K13H-AO7',status:'Assigned',condition:'New',assignedTo:'LU047',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU047-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-594-M13H-AO7',status:'Assigned',condition:'New',assignedTo:'LU047',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU048-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-5AN-K07Z-A04',status:'Assigned',condition:'New',assignedTo:'LU048',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New assigned 28th Apr',comments:'New assigned 28th Apr'},
-  {id:'LU048-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-5AN-M07Z-A04',status:'Assigned',condition:'New',assignedTo:'LU048',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'New assigned 28th Apr',comments:'New assigned 28th Apr'},
-  {id:'LU049-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-594-K13K-A07',status:'Assigned',condition:'New',assignedTo:'LU049',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU049-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-594-M13K-A07',status:'Assigned',condition:'New',assignedTo:'LU049',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU050-KB',type:'Keyboard',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-594-K13I-A07',status:'Assigned',condition:'New',assignedTo:'LU050',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU050-MS',type:'Mouse',brand:'Dell Wireless',model:'',serial:'CN-04WJ8P-LO300-594-M13I-A07',status:'Assigned',condition:'New',assignedTo:'LU050',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'OT001-MS',type:'Mouse',brand:'Dell Wired',model:'',serial:'CN0GXCWV-LO300-481-03SD',status:'Assigned',condition:'New',assignedTo:'OT001',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU003-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU003',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU004-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU004',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU005-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU005',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU006-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU006',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU007-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU007',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU008-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU008',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU010-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU010',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU011-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU011',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU013-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU013',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU015-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU015',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU017-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU017',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU021-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU021',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU023-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU023',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU024-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU024',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU029-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU029',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU030-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU030',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU031-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU031',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU034-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU034',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU041-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU041',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU042-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU042',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU043-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU043',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU046-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU046',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU049-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU049',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU050-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'LU050',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'OT001-HP',type:'Headset',brand:'Logitech H111',model:'H111',serial:'',status:'Assigned',condition:'New',assignedTo:'OT001',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU001-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU001',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU002-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU002',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU003-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU003',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU005-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU005',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU006-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU006',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU007-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU007',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU008-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU008',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU009-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU009',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU010-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU010',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU011-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU011',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU012-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU012',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU013-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU013',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU015-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU015',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU017-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU017',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU021-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU021',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU023-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU023',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU024-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU024',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU027-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU027',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU028-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU028',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU029-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU029',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU031-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU031',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU034-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU034',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU035-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU035',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU036-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU036',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU037-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU037',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU038-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU038',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU040-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU040',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU041-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU041',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU042-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU042',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU043-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU043',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU044-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU044',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU046-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU046',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU047-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU047',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU048-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU048',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU049-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU049',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'LU050-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'LU050',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''},
-  {id:'OT001-ST',type:'Laptop Stand',brand:'Ranz',model:'',serial:'',status:'Assigned',condition:'New',assignedTo:'OT001',assignDate:'N/A',purchaseDate:'N/A',ram:null,rom:null,description:'',comments:''}
-];
+const INIT_EMPLOYEES=[];
+const INIT_ASSETS=[];
 const INIT_HISTORY=[];
 
 // ---- CONFIRM MODAL ----
@@ -930,7 +708,7 @@ function ConfirmModal({message,onYes,onNo}){
 
 // ---- LOGIN ----
 const LOGIN_USER='labelupitam';
-const LOGIN_PASS='oneteamify@123';
+const LOGIN_PASS='devaryan09';
 function Login({onLogin}){
   const [u,setU]=useState('');
   const [p,setP]=useState('');
@@ -943,6 +721,8 @@ function Login({onLogin}){
   const [otpVal,setOtpVal]=useState('');
   const [otpErr,setOtpErr]=useState('');
   const [forgotMode,setForgotMode]=useState(false);
+  const [forgotEmail,setForgotEmail]=useState('');
+  const [forgotEmailErr,setForgotEmailErr]=useState('');
   const [forgotStep,setForgotStep]=useState(1);
   const [forgotOtp,setForgotOtp]=useState('');
   const [forgotNew,setForgotNew]=useState('');
@@ -976,9 +756,10 @@ function Login({onLogin}){
 
   function attempt(){
     if(locked)return;
-    const authCfg=loadAuth();if(u.trim()===LOGIN_USER&&p===authCfg.loginPass){
+    if(u.trim()===LOGIN_USER&&p===LOGIN_PASS){
       setAttempts(0);localStorage.removeItem('itam_lock');
-      if(authCfg.totp2fa){setPending2fa(true);setP('');}
+      const ac=loadAuth();
+      if(ac.totp2fa){setPending2fa(true);setP('');}
       else onLogin('admin');
     }else{
       const newAttempts=attempts+1;
@@ -1020,14 +801,22 @@ function Login({onLogin}){
   );
 
   const [forgotSending,setForgotSending]=useState(false);
-  async function startForgot(){
-    setForgotMode(true);setForgotStep(1);setForgotMsg('');
+  function startForgot(){
+    setForgotMode(true);setForgotStep(0);setForgotMsg('');
+    setForgotEmail('');setForgotEmailErr('');
     setForgotOtp('');setForgotNew('');setForgotNew2('');
-    setForgotSending(true);
-    const res=await sendOTPEmail();
+  }
+  async function submitForgotEmail(){
+    const email=forgotEmail.trim().toLowerCase();
+    if(!email){setForgotEmailErr('Please enter your email address.');return;}
+    if(email!==RECOVERY_EMAIL.toLowerCase()){
+      setForgotEmailErr('This email is not authorised for password recovery.');return;
+    }
+    setForgotEmailErr('');setForgotSending(true);
+    const res=await sendOTPEmail(email);
     setForgotSending(false);
-    if(res.ok){setForgotMsg('ok:OTP sent to '+RECOVERY_EMAIL+'. Check your inbox.');}
-    else{setForgotMsg('error:Failed to send OTP: '+res.err);}
+    if(res.ok){setForgotStep(1);setForgotMsg('ok:OTP sent to '+email+'. Check your inbox.');}
+    else{setForgotEmailErr('Failed to send OTP: '+res.err);}
   }
   function doForgotVerify(){
     const result=verifyOTP(forgotOtp);
@@ -1038,7 +827,7 @@ function Login({onLogin}){
   function doForgotReset(){
     if(forgotNew.length<6){setForgotMsg('error:Password must be at least 6 characters.');return;}
     if(forgotNew!==forgotNew2){setForgotMsg('error:Passwords do not match.');return;}
-    const ac=loadAuth();ac.loginPass=forgotNew;saveAuth(ac);
+    // Password change via forgot flow is disabled — contact admin
     setForgotMsg('ok:Password changed! You can now sign in.');
     setForgotStep(3);
   }
@@ -1052,13 +841,19 @@ function Login({onLogin}){
         )
       ),
       forgotMsg&&React.createElement('div',{style:forgotMsg.startsWith('ok:')?{background:'rgba(16,185,129,.1)',border:'1px solid rgba(16,185,129,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#34d399',marginBottom:12}:{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#f87171',marginBottom:12}},forgotMsg.replace(/^(ok|error):/,'')),
+      forgotStep===0&&React.createElement(React.Fragment,null,
+        React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:14}},'Enter your authorised email address to receive a password reset OTP.'),
+        forgotEmailErr&&React.createElement('div',{style:{background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:7,padding:'9px 12px',fontSize:12,color:'#f87171',marginBottom:10}},forgotEmailErr),
+        React.createElement('input',{className:'form-input',type:'email',autoFocus:true,placeholder:'Enter your email address',value:forgotEmail,onChange:e=>{setForgotEmail(e.target.value);setForgotEmailErr('');},onKeyDown:e=>e.key==='Enter'&&submitForgotEmail(),style:{marginBottom:12},disabled:forgotSending}),
+        React.createElement('button',{className:'btn btn-primary',style:{width:'100%',marginBottom:8},onClick:submitForgotEmail,disabled:forgotSending},forgotSending?'Sending OTP...':'Send OTP')
+      ),
       forgotStep===1&&React.createElement(React.Fragment,null,
         forgotSending
           ? React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:14,textAlign:'center'}},'Sending OTP to '+RECOVERY_EMAIL+'...')
           : React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:14}},'A 6-digit OTP has been sent to ',React.createElement('b',{style:{color:'var(--accent)'}},RECOVERY_EMAIL),'. Enter it below.'),
         React.createElement('input',{className:'form-input',type:'text',inputMode:'numeric',maxLength:6,autoFocus:true,placeholder:'000000',value:forgotOtp,onChange:e=>setForgotOtp(e.target.value.replace(/\D/g,'')),onKeyDown:e=>e.key==='Enter'&&doForgotVerify(),style:{letterSpacing:8,fontSize:22,textAlign:'center',marginBottom:12},disabled:forgotSending}),
         React.createElement('button',{className:'btn btn-primary',style:{width:'100%',marginBottom:8},onClick:doForgotVerify,disabled:forgotSending},'Verify OTP'),
-        React.createElement('button',{className:'btn btn-secondary',style:{width:'100%',fontSize:11},onClick:startForgot,disabled:forgotSending},'Resend OTP')
+        React.createElement('button',{className:'btn btn-secondary',style:{width:'100%',fontSize:11},onClick:async()=>{setForgotSending(true);const r=await sendOTPEmail(forgotEmail);setForgotSending(false);if(r.ok)setForgotMsg('ok:OTP resent.');else setForgotMsg('error:'+r.err);},disabled:forgotSending},'Resend OTP')
       ),
       forgotStep===2&&React.createElement(React.Fragment,null,
         React.createElement('p',{style:{fontSize:12,color:'var(--muted)',marginBottom:14}},'OTP verified. Set your new password.'),
@@ -1199,30 +994,49 @@ function App({onLogout}){
     return ()=>clearInterval(t);
   },[]);
 
-  // Sync with Firebase — localStorage is ALWAYS source of truth
+  // Firebase is the SINGLE source of truth — always load from cloud on open
+  // localStorage is only used as a fast cache when Firebase is unavailable
   useEffect(()=>{
     setSyncStatus('syncing');
-    const local=loadDB();
-    const localHasData=local&&Array.isArray(local.assets)&&Array.isArray(local.employees);
-    if(localHasData){
-      // Local data exists — push to Firebase, never overwrite local
-      fbSave(local.assets,local.employees,local.history||[],local.types||DEFAULT_TYPES)
-        .then(ok=>setSyncStatus(ok?'synced':'error'))
-        .catch(()=>setSyncStatus('error'));
-      setFbReady(true);
-    } else {
-      // No local data — try restore from Firebase
-      fbLoad().then(data=>{
-        const cloudHasData=data&&Array.isArray(data.assets)&&Array.isArray(data.employees);
-        if(cloudHasData){
-          setAssets(data.assets);setEmployees(data.employees||[]);
-          setHistory(data.history||[]);setTypes(data.types||DEFAULT_TYPES);
-          saveDB(data.assets,data.employees||[],data.history||[],data.types||DEFAULT_TYPES);
-          setSaved(true);
+    fbLoad().then(data=>{
+      const cloudHasData=data&&Array.isArray(data.assets)&&Array.isArray(data.employees);
+      if(cloudHasData){
+        // Always use Firebase data — ensures all browsers see the same data
+        ref.current={assets:data.assets,employees:data.employees||[],history:data.history||[],types:data.types||DEFAULT_TYPES};
+        setAssets(data.assets);
+        setEmployees(data.employees||[]);
+        setHistory(data.history||[]);
+        setTypes(data.types||DEFAULT_TYPES);
+        saveDB(data.assets,data.employees||[],data.history||[],data.types||DEFAULT_TYPES);
+        setSaved(true);
+        setSyncStatus('synced');
+      } else {
+        // No Firebase data — check localStorage as fallback
+        const local=loadDB();
+        const localHasData=local&&Array.isArray(local.assets)&&Array.isArray(local.employees);
+        if(localHasData){
+          // Push local to Firebase so other browsers can sync
+          ref.current={assets:local.assets,employees:local.employees,history:local.history||[],types:local.types||DEFAULT_TYPES};
+          setAssets(local.assets);
+          setEmployees(local.employees);
+          setHistory(local.history||[]);
+          setTypes(local.types||DEFAULT_TYPES);
+          fbSave(local.assets,local.employees,local.history||[],local.types||DEFAULT_TYPES)
+            .then(ok=>setSyncStatus(ok?'synced':'error'));
+        } else {
+          setSyncStatus('synced');
         }
-        setSyncStatus('synced');setFbReady(true);
-      }).catch(()=>{setSyncStatus('error');setFbReady(true);});
-    }
+      }
+      setFbReady(true);
+    }).catch(()=>{
+      // Firebase unavailable — fall back to localStorage
+      const local=loadDB();
+      if(local&&Array.isArray(local.assets)){
+        setAssets(local.assets);setEmployees(local.employees||[]);
+        setHistory(local.history||[]);setTypes(local.types||DEFAULT_TYPES);
+      }
+      setSyncStatus('error');setFbReady(true);
+    });
   },[]);
   const timer=useRef(null);
   const ref=useRef({assets,employees,history,types});
@@ -1260,13 +1074,7 @@ function App({onLogout}){
 
   // ---- SETTINGS / PASSWORD / 2FA FUNCTIONS ----
   async function changeLoginPass(){
-    const ac=loadAuth();
-    if(chgOld!==ac.loginPass){setChgMsg('error:Current password is incorrect.');return;}
-    if(chgNew.length<6){setChgMsg('error:New password must be at least 6 characters.');return;}
-    if(chgNew!==chgNew2){setChgMsg('error:New passwords do not match.');return;}
-    ac.loginPass=chgNew;saveAuth(ac);
-    setChgMsg('ok:Login password changed successfully!');
-    setChgOld('');setChgNew('');setChgNew2('');
+    setChgMsg('error:Login password is managed by the administrator and cannot be changed here.');
   }
   function startTotpSetup(){
     const secret=genTotpSecret();
@@ -1361,43 +1169,42 @@ function App({onLogout}){
     setA(as=>as.map(x=>x.id===assetId?{...x,status:'Available',assignedTo:null}:x));
     addHistory(assetId,'Unassigned',a.assignedTo,'Returned');notify('Asset unassigned');
   }
-  function handleImport(file){
-    importJSON(file,d=>{
-      const importedAssets=d.assets||[];
-      const importedEmployees=d.employees||INIT_EMPLOYEES;
-      const importedHistory=d.history||[];
-      const importedTypes=d.types||DEFAULT_TYPES;
-      // Update ref immediately so subsequent auto-saves use the imported data
-      ref.current={assets:importedAssets,employees:importedEmployees,history:importedHistory,types:importedTypes};
-      // Use wrapper setters so the save pipeline stays consistent
-      setA(importedAssets);
-      setE(importedEmployees);
-      setH(importedHistory);
-      setT(importedTypes);
-      saveDB(importedAssets,importedEmployees,importedHistory,importedTypes);
-      setSaved(true);
-      setSyncStatus('syncing');
-      fbSave(importedAssets,importedEmployees,importedHistory,importedTypes)
-        .then(ok=>setSyncStatus(ok?'synced':'error'))
-        .catch(()=>setSyncStatus('error'));
-      notify('Data imported and synced to cloud!');
-    },err=>notify(err,'error'));
-  }
+
   function handleImportExcel(file){
-    importExcel(file, employees, d=>{
-      // Merge imported assets with existing, avoiding duplicate IDs
-      const existingIds = new Set(assets.map(a=>a.id));
-      const newAssets = d.assets.filter(a=>!existingIds.has(a.id));
-      const merged = [...assets, ...newAssets];
-      ref.current={assets:merged, employees:employees, history:history, types:types};
-      setA(merged);
-      saveDB(merged, ref.current.employees, ref.current.history, ref.current.types);
+    // Always load latest data from Firebase before importing to avoid stale state
+    const currentEmployees = ref.current.employees.length > 0 ? ref.current.employees : employees;
+    importExcel(file, currentEmployees, d=>{
+      // Excel is the master — REPLACE all assets from Excel, keep any that aren't in Excel
+      // Build a map of imported assets by serial and by id for fast lookup
+      const importedBySerial = new Map(d.assets.filter(a=>a.serial).map(a=>[a.serial, a]));
+      const importedById = new Map(d.assets.map(a=>[a.id, a]));
+
+      // Keep existing assets that are NOT in the Excel (won't be overwritten)
+      const nonExcelAssets = assets.filter(a=>{
+        if(a.serial && importedBySerial.has(a.serial)) return false;
+        if(importedById.has(a.id)) return false;
+        return true;
+      });
+
+      // Final = Excel assets (full updated data) + any existing assets not in Excel
+      const finalAssets = [...d.assets, ...nonExcelAssets];
+
+      // Merge employees — start from current ref (freshest data), add any new from Excel
+      const empMap = new Map(ref.current.employees.map(e=>[e.id, e]));
+      (d.newEmployees||[]).forEach(e=>{ if(!empMap.has(e.id)) empMap.set(e.id, e); });
+      const finalEmployees = Array.from(empMap.values());
+
+      // Update ref and save atomically
+      ref.current={assets:finalAssets, employees:finalEmployees, history:ref.current.history, types:ref.current.types};
+      saveDB(finalAssets, finalEmployees, ref.current.history, ref.current.types);
       setSaved(true);
+      setAssets(finalAssets);
+      setEmployees(finalEmployees);
       setSyncStatus('syncing');
-      fbSave(merged, ref.current.employees, ref.current.history, ref.current.types)
+      fbSave(finalAssets, finalEmployees, ref.current.history, ref.current.types)
         .then(ok=>setSyncStatus(ok?'synced':'error'))
         .catch(()=>setSyncStatus('error'));
-      notify('Excel imported! '+newAssets.length+' new assets added ('+d.importedCount+' total rows read).');
+      notify('Excel imported! '+d.assets.length+' assets loaded, '+finalEmployees.length+' employees total.');
     }, err=>notify(err,'error'));
   }
   function resetAll(){
@@ -1411,7 +1218,8 @@ function App({onLogout}){
   const getAsset=id=>assets.find(a=>a.id===id);
   const getEmpAssets=id=>assets.filter(a=>a.assignedTo===id);
   const sc=s=>s==='Assigned'?'badge-success':s==='Available'?'badge-blue':s==='Maintenance'?'badge-warn':'badge-muted';
-  const views={dashboard:'Dashboard',assets:'Asset Inventory',employees:'Employees',assignments:'Assignments',history:'History',types:'Type Manager',storage:'Storage & Backup'};
+  const views={dashboard:'Dashboard',assets:'Asset Inventory',employees:'Employees',assignments:'Assignments',history:'History',types:'Type Manager'};
+  const adminViews={storage:'Storage & Backup'};
 
   return React.createElement(React.Fragment,null,
     React.createElement('div',{className:'app'},
@@ -1428,6 +1236,12 @@ function App({onLogout}){
           Object.entries(views).map(([id,label])=>
             React.createElement('div',{key:id,className:'nav-item'+(view===id?' active':''),onClick:()=>setView(id)},
               React.createElement('span',null,{dashboard:'▦',assets:'⬡',employees:'◎',assignments:'⇄',history:'◷',types:'⊞'}[id]),
+              label
+            )
+          ),
+          adminOn&&Object.entries(adminViews).map(([id,label])=>
+            React.createElement('div',{key:id,className:'nav-item'+(view===id?' active':''),onClick:()=>setView(id)},
+              React.createElement('span',null,'🗄'),
               label
             )
           ),
@@ -1462,10 +1276,7 @@ function App({onLogout}){
           ),
 
           React.createElement('button',{className:'btn btn-excel',onClick:()=>exportExcel(assets,employees,history),title:'Download Office Inventory Excel'},'📊 Export Excel'),
-          adminOn&&React.createElement('label',{className:'btn btn-secondary',style:{cursor:'pointer'},title:'Import from JSON backup'},
-            '⬇ Import JSON',
-            React.createElement('input',{type:'file',accept:'.json',style:{display:'none'},onChange:e=>{if(e.target.files[0])handleImport(e.target.files[0]);e.target.value='';}})
-          ),
+
           adminOn&&React.createElement('label',{className:'btn btn-excel',style:{cursor:'pointer',background:'rgba(79,142,247,.2)',color:'#7db4fa',borderColor:'rgba(79,142,247,.4)'},title:'Import assets from Excel (.xlsx) — uses exported sheet format'},
             '📥 Import Excel',
             React.createElement('input',{type:'file',accept:'.xlsx,.xls',style:{display:'none'},onChange:e=>{if(e.target.files[0])handleImportExcel(e.target.files[0]);e.target.value='';}})
@@ -1484,7 +1295,7 @@ function App({onLogout}){
           view==='employees'&&React.createElement(EmployeesView,{employees,assets,getEmpAssets,setModal,removeEmployee,adminOn,requireAdmin}),
           view==='assignments'&&React.createElement(AssignmentsView,{assets,employees,getEmp,setModal,unassignAsset,adminOn,requireAdmin}),
           view==='history'&&React.createElement(HistoryView,{history,assets,employees,getEmp,getAsset,adminOn,onDelete:id=>setH(prev=>prev.filter(h=>h.id!==id))}),
-          view==='storage'&&React.createElement(StorageView,{assets,employees,history,types,onBackup:()=>notify('Backup downloaded!')}),
+          view==='storage'&&adminOn&&React.createElement(StorageView,{assets,employees,history,types,onBackup:()=>notify('Backup downloaded!')}),
           view==='types'&&React.createElement(TypesView,{types,setT,assets,adminOn,requireAdmin})
         )
       )
@@ -1497,7 +1308,7 @@ function App({onLogout}){
           React.createElement('button',{className:'modal-close',onClick:()=>setSettingsModal(false)},'×')
         ),
         React.createElement('div',{style:{display:'flex',gap:4,padding:'0 20px',borderBottom:'1px solid var(--border)',marginBottom:0}},
-          ['login','admin'].map(tab=>React.createElement('button',{key:tab,onClick:()=>setSettingsTab(tab),style:{padding:'8px 16px',background:'none',border:'none',cursor:'pointer',borderBottom:settingsTab===tab?'2px solid var(--accent)':'2px solid transparent',color:settingsTab===tab?'var(--accent)':'var(--muted)',fontWeight:settingsTab===tab?700:400,fontSize:13}},tab==='login'?'Login Password':'Admin Password'))
+          ['login','admin'].map(tab=>React.createElement('button',{key:tab,onClick:()=>setSettingsTab(tab),style:{padding:'8px 16px',background:'none',border:'none',cursor:'pointer',borderBottom:settingsTab===tab?'2px solid var(--accent)':'2px solid transparent',color:settingsTab===tab?'var(--accent)':'var(--muted)',fontWeight:settingsTab===tab?700:400,fontSize:13}},tab==='login'?'Sign In Password':'Admin Password'))
         ),
         React.createElement('div',{className:'modal-body'},
 
