@@ -182,10 +182,11 @@ function loadAuth(){
     const r=localStorage.getItem(AUTH_KEY);
     if(r){
       const d=JSON.parse(r);
-      d.loginPass=LOGIN_PASS;       // always use hardcoded login password
-      d.adminPass=d.adminPass||ADMIN_PASS; // allow admin pass to be changed
-      d.totp2fa=d.totp2fa||null;    // preserve 2FA secret for login
-      d.adminTotp=d.adminTotp||null; // preserve 2FA secret for admin
+      // Use stored passwords — fall back to constants only if missing
+      d.loginPass=d.loginPass||LOGIN_PASS;
+      d.adminPass=d.adminPass||ADMIN_PASS;
+      d.totp2fa=d.totp2fa||null;
+      d.adminTotp=d.adminTotp||null;
       return d;
     }
   }catch(e){}
@@ -756,9 +757,9 @@ function Login({onLogin}){
 
   function attempt(){
     if(locked)return;
-    if(u.trim()===LOGIN_USER&&p===LOGIN_PASS){
+    const ac=loadAuth();
+    if(u.trim()===LOGIN_USER&&p===ac.loginPass){
       setAttempts(0);localStorage.removeItem('itam_lock');
-      const ac=loadAuth();
       if(ac.totp2fa){setPending2fa(true);setP('');}
       else onLogin('admin');
     }else{
@@ -827,7 +828,7 @@ function Login({onLogin}){
   function doForgotReset(){
     if(forgotNew.length<6){setForgotMsg('error:Password must be at least 6 characters.');return;}
     if(forgotNew!==forgotNew2){setForgotMsg('error:Passwords do not match.');return;}
-    // Password change via forgot flow is disabled — contact admin
+    const ac=loadAuth();ac.loginPass=forgotNew;saveAuth(ac);
     setForgotMsg('ok:Password changed! You can now sign in.');
     setForgotStep(3);
   }
@@ -1074,7 +1075,14 @@ function App({onLogout}){
 
   // ---- SETTINGS / PASSWORD / 2FA FUNCTIONS ----
   async function changeLoginPass(){
-    setChgMsg('error:Login password is managed by the administrator and cannot be changed here.');
+    const ac=loadAuth();
+    if(chgOld!==ac.loginPass){setChgMsg('error:Current password is incorrect.');return;}
+    if(chgNew.length<6){setChgMsg('error:New password must be at least 6 characters.');return;}
+    if(chgNew!==chgNew2){setChgMsg('error:Passwords do not match.');return;}
+    ac.loginPass=chgNew;
+    saveAuth(ac);
+    setChgMsg('ok:Login password changed successfully!');
+    setChgOld('');setChgNew('');setChgNew2('');
   }
   function startTotpSetup(){
     const secret=genTotpSecret();
