@@ -1154,10 +1154,17 @@ function App({onLogout}){
     });
   }
   function saveEmployee(data,editId){
-    if(editId){setE(e=>e.map(x=>x.id===editId?{...x,...data}:x));notify('Employee updated');}
+    if(editId){
+      setE(e=>e.map(x=>x.id===editId?{...x,...data}:x));
+      // If employee ID changed, update all assets assigned to old ID
+      if(data.id && data.id!==editId){
+        setA(a=>a.map(x=>x.assignedTo===editId?{...x,assignedTo:data.id}:x));
+      }
+      notify('Employee updated');
+    }
     else{
       const joinDate=data.joinDate?new Date(data.joinDate).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):today();
-      setE(e=>[{...data,id:data.id||genId('EMP'),joinDate},...e]);notify('Employee added');
+      setE(e=>[{...data,id:data.id||('LU-'+String(e.length+1).padStart(2,'0')),joinDate},...e]);notify('Employee added');
     }
     setModal(null);
   }
@@ -1309,7 +1316,7 @@ function App({onLogout}){
       )
     ),
     // PIN MODAL
-    settingsModal&&React.createElement('div',{className:'modal-overlay',onClick:()=>setSettingsModal(false)},
+    settingsModal&&React.createElement('div',{className:'modal-overlay'},
       React.createElement('div',{className:'modal',style:{maxWidth:480,maxHeight:'80vh',overflow:'auto'},onClick:e=>e.stopPropagation()},
         React.createElement('div',{className:'modal-header'},
           React.createElement('h3',null,'⚙ Security Settings'),
@@ -1387,7 +1394,7 @@ function App({onLogout}){
         )
       )
     ),
-    pinModal&&React.createElement('div',{className:'modal-overlay',onClick:()=>{setPinModal(false);setAdminPinPending2fa(false);}},
+    pinModal&&React.createElement('div',{className:'modal-overlay'},
       React.createElement('div',{className:'modal',style:{maxWidth:340},onClick:e=>e.stopPropagation()},
         React.createElement('div',{className:'modal-header'},React.createElement('h3',null,'🔐 Admin Access'),React.createElement('button',{className:'modal-close',onClick:()=>{setPinModal(false);setAdminPinPending2fa(false);}},'×')),
         React.createElement('div',{className:'modal-body'},
@@ -1475,7 +1482,7 @@ function Dashboard({assets,employees,history,getEmp,setView}){
         React.createElement('tbody',null,assets.slice(0,5).map(a=>{
           const emp=getEmp(a.assignedTo);
           return React.createElement('tr',{key:a.id},
-            React.createElement('td',null,React.createElement('code',{style:{fontSize:11,color:'#7db4fa'}},emp?emp.id:'—')),
+            React.createElement('td',null,React.createElement('span',{style:{fontSize:12,color:'#7db4fa',fontWeight:600,whiteSpace:'nowrap'}},emp?emp.id:'—')),
             React.createElement('td',null,a.type),
             React.createElement('td',null,a.brand),
             React.createElement('td',null,React.createElement('span',{className:'badge '+(a.status==='Assigned'?'badge-success':a.status==='Available'?'badge-blue':'badge-warn')},a.status)),
@@ -1497,7 +1504,10 @@ function AssetsView({assets,employees,types,getEmp,sc,setModal,removeAsset,unass
     let r=assets.filter(a=>{
       const mf=filter==='All'||a.status===filter||a.type===filter;
       const s=search.toLowerCase();
-      const ms=!s||a.id.toLowerCase().includes(s)||a.brand.toLowerCase().includes(s)||a.type.toLowerCase().includes(s)||a.serial.toLowerCase().includes(s)||(a.model||'').toLowerCase().includes(s);
+      const emp=getEmp(a.assignedTo);
+      const empName=emp?emp.name.toLowerCase():'';
+      const empId=emp?emp.id.toLowerCase():'';
+      const ms=!s||a.id.toLowerCase().includes(s)||a.brand.toLowerCase().includes(s)||a.type.toLowerCase().includes(s)||a.serial.toLowerCase().includes(s)||(a.model||'').toLowerCase().includes(s)||empName.includes(s)||empId.includes(s);
       return mf&&ms;
     });
     if(sort==='brand')r=[...r].sort((a,b)=>a.brand.localeCompare(b.brand));
@@ -1511,7 +1521,7 @@ function AssetsView({assets,employees,types,getEmp,sc,setModal,removeAsset,unass
     React.createElement('div',{className:'filter-bar'},
       React.createElement('div',{className:'search-bar'},
         React.createElement('span',{className:'search-icon'},'⌕'),
-        React.createElement('input',{placeholder:'Search...',value:search,onChange:e=>setSearch(e.target.value),autoComplete:'off',name:'asset-search'})
+        React.createElement('input',{placeholder:'Search by type, brand, serial...',value:search,onChange:e=>setSearch(e.target.value),autoComplete:'off',name:'asset-search',type:'search'})
       ),
       React.createElement(SortBtn,{field:'brand',label:'Brand A-Z'}),
       React.createElement(SortBtn,{field:'type',label:'Type A-Z'}),
@@ -1526,7 +1536,7 @@ function AssetsView({assets,employees,types,getEmp,sc,setModal,removeAsset,unass
           list.map(a=>{
             const emp=getEmp(a.assignedTo);
             return React.createElement('tr',{key:a.id},
-              React.createElement('td',null,React.createElement('code',{style:{fontSize:11,color:'#7db4fa'}},emp?emp.id:'—')),
+              React.createElement('td',null,React.createElement('span',{style:{fontSize:12,color:'#7db4fa',fontWeight:600,whiteSpace:'nowrap'}},emp?emp.id:'—')),
               React.createElement('td',null,emp?React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},React.createElement('div',{className:'avatar avatar-sm'},initials(emp.name)),emp.name):React.createElement('span',{style:{color:'var(--muted)',fontSize:12}},'-')),
               React.createElement('td',null,a.type),
               React.createElement('td',null,a.brand,a.model&&React.createElement('span',{style:{color:'var(--muted)',marginLeft:4,fontSize:11}},a.model)),
@@ -1590,7 +1600,7 @@ function EmployeesView({employees,assets,getEmpAssets,setModal,removeEmployee,ad
                 React.createElement('div',{style:{fontSize:11,color:'var(--muted)'}},e.email)
               )
             )),
-            React.createElement('td',null,React.createElement('code',{style:{fontSize:11,color:'#7db4fa'}},e.id)),
+            React.createElement('td',null,React.createElement('span',{style:{fontSize:12,color:'#7db4fa',fontWeight:600,whiteSpace:'nowrap'}},e.id)),
             React.createElement('td',null,React.createElement('span',{className:'chip'},e.department)),
             React.createElement('td',null,React.createElement('span',{className:'badge '+(ea.length>0?'badge-success':'badge-muted'),style:{cursor:'pointer'},onClick:()=>setDetail(e.id)},ea.length+' asset'+(ea.length!==1?'s':''))),
             React.createElement('td',null,adminOn?React.createElement('div',{style:{display:'flex',gap:4}},
@@ -1601,7 +1611,7 @@ function EmployeesView({employees,assets,getEmpAssets,setModal,removeEmployee,ad
         }))
       )
     ),
-    detail&&detailEmp&&React.createElement('div',{className:'modal-overlay',onClick:()=>setDetail(null)},
+    detail&&detailEmp&&React.createElement('div',{className:'modal-overlay'},
       React.createElement('div',{className:'modal',style:{maxWidth:560},onClick:e=>e.stopPropagation()},
         React.createElement('div',{className:'modal-header'},
           React.createElement('div',{style:{display:'flex',alignItems:'center',gap:10}},
@@ -1768,7 +1778,7 @@ function ModalView({modal,setModal,saveAsset,saveEmployee,assignAsset,assets,emp
 
   if(modal.type==='addAsset'||modal.type==='editAsset'){
     const isEdit=modal.type==='editAsset';
-    return React.createElement('div',{className:'modal-overlay',onClick:close},
+    return React.createElement('div',{className:'modal-overlay'},
       React.createElement('div',{className:'modal',onClick:e=>e.stopPropagation()},
         React.createElement('div',{className:'modal-header'},React.createElement('h3',null,isEdit?'Edit Asset':'Add New Asset'),React.createElement('button',{className:'modal-close',onClick:close},'×')),
         React.createElement('div',{className:'modal-body'},
@@ -1844,7 +1854,7 @@ function ModalView({modal,setModal,saveAsset,saveEmployee,assignAsset,assets,emp
 
   if(modal.type==='addEmployee'||modal.type==='editEmployee'){
     const isEdit=modal.type==='editEmployee';
-    return React.createElement('div',{className:'modal-overlay',onClick:close},
+    return React.createElement('div',{className:'modal-overlay'},
       React.createElement('div',{className:'modal',onClick:e=>e.stopPropagation()},
         React.createElement('div',{className:'modal-header'},React.createElement('h3',null,isEdit?'Edit Employee':'Add Employee'),React.createElement('button',{className:'modal-close',onClick:close},'×')),
         React.createElement('div',{className:'modal-body'},
@@ -1853,7 +1863,7 @@ function ModalView({modal,setModal,saveAsset,saveEmployee,assignAsset,assets,emp
             React.createElement('input',{className:'form-input',value:form.name||'',placeholder:'Full name',onChange:e=>set('name',e.target.value)})
           ),
           React.createElement('div',{className:'form-row'},
-            !isEdit&&React.createElement('div',{className:'form-group'},
+            React.createElement('div',{className:'form-group'},
               React.createElement('label',{className:'form-label'},'Employee ID'),
               React.createElement('input',{className:'form-input',value:form.id||'',placeholder:'e.g. EMP-006',onChange:e=>set('id',e.target.value)})
             ),
@@ -1884,7 +1894,7 @@ function ModalView({modal,setModal,saveAsset,saveEmployee,assignAsset,assets,emp
 
   if(modal.type==='assign'){
     const avail=assets.filter(a=>a.status==='Available');
-    return React.createElement('div',{className:'modal-overlay',onClick:close},
+    return React.createElement('div',{className:'modal-overlay'},
       React.createElement('div',{className:'modal',onClick:e=>e.stopPropagation()},
         React.createElement('div',{className:'modal-header'},React.createElement('h3',null,'Assign Asset'),React.createElement('button',{className:'modal-close',onClick:close},'×')),
         React.createElement('div',{className:'modal-body'},
