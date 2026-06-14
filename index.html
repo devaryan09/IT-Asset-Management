@@ -1175,13 +1175,22 @@ function App({onLogout}){
     });
   }
   function assignAsset(assetId,empId,note,assignDate){
-    const dateLabel=assignDate?new Date(assignDate).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):today();setA(a=>a.map(x=>x.id===assetId?{...x,status:'Assigned',assignedTo:empId,assignDate:dateLabel}:x));
+    const dateLabel=assignDate?new Date(assignDate).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):today();
+    // Update assets directly using ref to avoid stale closure
+    const updatedAssets = ref.current.assets.map(x=>x.id===assetId?{...x,status:'Assigned',assignedTo:empId,assignDate:dateLabel}:x);
+    ref.current.assets = updatedAssets;
+    setAssets(updatedAssets);
+    triggerSave(updatedAssets, ref.current.employees, ref.current.history, ref.current.types);
     addHistory(assetId,'Assigned',empId,note||'Assigned');
-    notify('Asset assigned');setModal(null);
+    notify('Asset assigned');
+    setModal(null);
   }
   function unassignAsset(assetId){
-    const a=assets.find(x=>x.id===assetId);if(!a||!a.assignedTo)return;
-    setA(as=>as.map(x=>x.id===assetId?{...x,status:'Available',assignedTo:null}:x));
+    const a=ref.current.assets.find(x=>x.id===assetId);if(!a||!a.assignedTo)return;
+    const updatedAssets=ref.current.assets.map(x=>x.id===assetId?{...x,status:'Available',assignedTo:null,assignDate:null}:x);
+    ref.current.assets=updatedAssets;
+    setAssets(updatedAssets);
+    triggerSave(updatedAssets,ref.current.employees,ref.current.history,ref.current.types);
     addHistory(assetId,'Unassigned',a.assignedTo,'Returned');notify('Asset unassigned');
   }
 
@@ -1194,19 +1203,29 @@ function App({onLogout}){
       const importedBySerial = new Map(d.assets.filter(a=>a.serial).map(a=>[a.serial, a]));
       const importedById = new Map(d.assets.map(a=>[a.id, a]));
 
-      // Keep existing assets that are NOT in the Excel (won't be overwritten)
-      const nonExcelAssets = assets.filter(a=>{
+      // Excel is the MASTER SOURCE - fully replace all assets that exist in Excel
+      // Keep existing assets that are NOT in the Excel at all
+      const currentAssets = ref.current.assets || assets;
+      const nonExcelAssets = currentAssets.filter(a=>{
         if(a.serial && importedBySerial.has(a.serial)) return false;
         if(importedById.has(a.id)) return false;
         return true;
       });
 
-      // Final = Excel assets (full updated data) + any existing assets not in Excel
+      // Final = Excel assets (with correct assignments) + any existing assets not in Excel
       const finalAssets = [...d.assets, ...nonExcelAssets];
 
-      // Merge employees — start from current ref (freshest data), add any new from Excel
+      // Merge employees — Excel employees override existing, add new ones
       const empMap = new Map(ref.current.employees.map(e=>[e.id, e]));
-      (d.newEmployees||[]).forEach(e=>{ if(!empMap.has(e.id)) empMap.set(e.id, e); });
+      // Add/update employees from Excel
+      (d.newEmployees||[]).forEach(e=>{ empMap.set(e.id, e); });
+      // Also ensure all employees referenced in assets exist
+      finalAssets.forEach(a=>{
+        if(a.assignedTo && !empMap.has(a.assignedTo)){
+          // Try to find employee name from asset
+          empMap.set(a.assignedTo, {id:a.assignedTo, name:a.assignedToName||a.assignedTo, department:a.department||'', email:'', joinDate:''});
+        }
+      });
       const finalEmployees = Array.from(empMap.values());
 
       // Update ref and save atomically
@@ -1893,7 +1912,7 @@ function ModalView({modal,setModal,saveAsset,saveEmployee,assignAsset,assets,emp
   }
 
   if(modal.type==='assign'){
-    const avail=assets.filter(a=>a.status==='Available');
+    const avail=assets.filter(a=>a.status==='Available'||a.status==='available');
     return React.createElement('div',{className:'modal-overlay'},
       React.createElement('div',{className:'modal',onClick:e=>e.stopPropagation()},
         React.createElement('div',{className:'modal-header'},React.createElement('h3',null,'Assign Asset'),React.createElement('button',{className:'modal-close',onClick:close},'×')),
@@ -1926,7 +1945,7 @@ function ModalView({modal,setModal,saveAsset,saveEmployee,assignAsset,assets,emp
         ),
         React.createElement('div',{className:'modal-footer'},
           React.createElement('button',{className:'btn btn-secondary',onClick:close},'Cancel'),
-          React.createElement('button',{className:'btn btn-primary',onClick:()=>{const aid=selAsset||modal.assetId;if(!aid||!selEmp){alert('Select asset and employee');return;}assignAsset(aid,selEmp,note,assignDate);}  },'Assign Asset')
+          React.createElement('button',{className:'btn btn-primary',onClick:()=>{const aid=selAsset||modal.assetId;if(!aid){alert('Please select an asset');return;}if(!selEmp){alert('Please select an employee');return;}assignAsset(aid,selEmp,note,assignDate);}  },'Assign Asset')
         )
       )
     );
